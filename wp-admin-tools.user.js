@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WP Admin Tools Panel — User DB / Order CHB / LOG
 // @namespace    https://github.com/blackowl0192/script_folder
-// @version      1.9.1
+// @version      1.9.2
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
 // @author       Black Owl
 // @match        *://*/wp-admin/*
@@ -59,7 +59,9 @@
     'megacs2.com',
     'cs2story.com',
     'dota2story.com',
-    'cs2ultima.com'
+    'cs2ultima.com',
+    'cs2skin.pro',
+    'dota2skin.pro'
   ];
 
   const currentHost = window.location.hostname.replace(/^www\./, '');
