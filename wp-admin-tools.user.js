@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         WP Admin Tools Panel — User DB / Order CHB / LOG
+// @name        WP Admin Панель для ЧБ
 // @namespace    https://github.com/blackowl0192/script_folder
 // @version      1.9.2
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
