@@ -61,7 +61,9 @@
     'dota2story.com',
     'cs2ultima.com',
     'cs2skin.pro',
-    'dota2skin.pro'
+    'dota2skin.pro',
+    'dota2ultima.com',
+    'smmmaster.net'
   ];
 
   const currentHost = window.location.hostname.replace(/^www\./, '');
