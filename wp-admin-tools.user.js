@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WP Admin Панель для ЧБ
 // @namespace    https://github.com/blackowl0192/script_folder
-// @version      1.9.4
+// @version      1.9.5
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
 // @author       Black Owl
 // @match        *://*/wp-admin/*
@@ -952,6 +952,74 @@
   /************************************************************
    * 9. ВКЛАДКА 2 — РЕДАКТИРОВАНИЕ ОРДЕРА ЧБ
    ************************************************************/
+  /**
+   * Выбирает метод оплаты картой.
+   * Сначала проверяет стандартные поля WooCommerce, затем другие select,
+   * связанные с payment method. Подходит для Payment by card, Pay by card
+   * и любых других вариантов, содержащих "card".
+   */
+  function selectCardPaymentMethod() {
+    const preferredSelectors = [
+      '#_payment_method',
+      'select[name="_payment_method"]',
+      '#payment_method',
+      'select[name="payment_method"]'
+    ];
+
+    const paymentSelects = [];
+    preferredSelectors.forEach(selector => {
+      const select = qs(selector);
+      if (select && !paymentSelects.includes(select)) paymentSelects.push(select);
+    });
+
+    qsa('select').forEach(select => {
+      const fieldKey = `${select.id || ''} ${select.name || ''}`;
+      if (/payment.?method/i.test(fieldKey) && !paymentSelects.includes(select)) {
+        paymentSelects.push(select);
+      }
+    });
+
+    let bestMatch = null;
+
+    paymentSelects.forEach(select => {
+      Array.from(select.options || []).forEach(option => {
+        const text = String(option.textContent || '').trim();
+        const value = String(option.value || '').trim();
+        const searchable = `${text} ${value}`.toLowerCase();
+
+        if (!searchable.includes('card')) return;
+
+        const normalizedText = text.toLowerCase().replace(/\s+/g, ' ').trim();
+        let score = 10;
+
+        if (normalizedText === 'payment by card') score = 100;
+        else if (normalizedText === 'pay by card') score = 90;
+        else if (/payment\s+by\s+card/i.test(normalizedText)) score = 80;
+        else if (/pay\s+by\s+card/i.test(normalizedText)) score = 70;
+
+        if (!bestMatch || score > bestMatch.score) {
+          bestMatch = { select, option, score };
+        }
+      });
+    });
+
+    if (!bestMatch) return false;
+
+    const { select, option } = bestMatch;
+    Array.from(select.options).forEach(item => {
+      item.selected = item === option;
+    });
+    select.value = option.value;
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    if (window.jQuery) {
+      window.jQuery(select).trigger('change');
+    }
+
+    return true;
+  }
+
   function applyOrderData() {
     const dateInput = qs('#bo-order-date', app);
     const txInput = qs('#bo-order-tx', app);
@@ -978,6 +1046,8 @@
       setValue('#_transaction_id', txInput.value.trim());
     }
 
+    const cardPaymentSelected = selectCardPaymentMethod();
+
     const status = qs('#order_status');
     if (status) {
       status.value = 'wc-completed';
@@ -992,7 +1062,11 @@
       window.confirm = originalConfirm;
     }, 500);
 
-    showStatus('Данные ордера применены', 'ok');
+    if (cardPaymentSelected) {
+      showStatus('Данные ордера применены. Выбран метод оплаты картой.', 'ok');
+    } else {
+      showStatus('Данные применены, но метод оплаты с "card" не найден.', 'warn');
+    }
     return true;
   }
 
