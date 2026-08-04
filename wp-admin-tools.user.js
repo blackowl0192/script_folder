@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WP Admin Панель для ЧБ
 // @namespace    https://github.com/blackowl0192/script_folder
-// @version      1.9.3
+// @version      1.9.4
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
 // @author       Black Owl
 // @match        *://*/wp-admin/*
@@ -1109,28 +1109,60 @@
 
 
   /**
-   * Нормализует цену для WooCommerce в формат 10,74.
-   * Убирает пробелы, символы валют, заменяет точку на запятую.
+   * Преобразует цену из Excel в число независимо от разделителя.
+   * Примеры: "39,00" -> 39; "39.00" -> 39; "3,25" -> 3.25.
    */
   function normalizeOrderItemPrice(value) {
     if (value === undefined || value === null) return null;
 
-    let cleaned = String(value)
+    const cleaned = String(value)
       .trim()
       .replace(/\s+/g, '')
       .replace(/[€$£₽]/g, '')
-      .replace('.', ',');
+      .replace(',', '.');
 
-    if (!/^\d+(,\d{1,2})?$/.test(cleaned)) {
-      return null;
+    if (!/^\d+(\.\d{1,2})?$/.test(cleaned)) return null;
+
+    const number = Number(cleaned);
+    return Number.isFinite(number) && number >= 0 ? number : null;
+  }
+
+  /**
+   * Определяет десятичный разделитель текущего сайта WooCommerce.
+   * Сначала использует настройку WooCommerce, затем смотрит на существующие
+   * значения и отображаемые цены конкретной строки заказа.
+   */
+  function detectOrderPriceDecimalSeparator(row) {
+    const wooSettings = window.woocommerce_admin_meta_boxes;
+    const configuredSeparator = wooSettings && (
+      wooSettings.currency_format_decimal_sep ||
+      wooSettings.decimal_separator ||
+      wooSettings.price_decimal_separator
+    );
+
+    if (configuredSeparator === ',' || configuredSeparator === '.') {
+      return configuredSeparator;
     }
 
-    if (!cleaned.includes(',')) {
-      cleaned += ',00';
+    const candidates = [
+      row.querySelector('input.line_total')?.value,
+      row.querySelector('input.line_subtotal')?.value,
+      row.querySelector('.line_cost .amount')?.textContent,
+      row.querySelector('.item_cost .amount')?.textContent
+    ].filter(Boolean);
+
+    for (const value of candidates) {
+      const text = String(value).replace(/\s+/g, '');
+      if (/\d+,\d{1,2}(?:\D|$)/.test(text)) return ',';
+      if (/\d+\.\d{1,2}(?:\D|$)/.test(text)) return '.';
     }
 
-    const [whole, cents = '00'] = cleaned.split(',');
-    return `${whole},${cents.padEnd(2, '0')}`;
+    // WooCommerce по умолчанию использует точку.
+    return '.';
+  }
+
+  function formatOrderItemPrice(value, decimalSeparator) {
+    return Number(value).toFixed(2).replace('.', decimalSeparator);
   }
 
   /**
@@ -1231,8 +1263,13 @@
         startIndex = 1;
       }
 
-      // Если заголовка нет, но первая колонка похожа на цену, а вторая на количество,
-      // считаем это Excel-форматом: цена TAB количество.
+      // Вставка двух столбцов из Excel всегда разделяется табуляцией:
+      // первая колонка — полная цена, вторая — количество.
+      if (startIndex === 0 && lines[0].includes('\t')) {
+        mode = 'excel_price_qty';
+      }
+
+      // Дополнительное распознавание Excel-формата без заголовка.
       if (startIndex === 0 && firstParts.length >= 2) {
         const first = firstParts[0];
         const second = firstParts[1];
@@ -1344,10 +1381,12 @@
       const qtyInput = row.querySelector(`input[name="order_item_qty[${orderItemId}]"]`);
       const subtotalInput = row.querySelector(`input[name="line_subtotal[${orderItemId}]"]`);
       const totalInput = row.querySelector(`input[name="line_total[${orderItemId}]"]`);
+      const decimalSeparator = detectOrderPriceDecimalSeparator(row);
+      const formattedTotal = formatOrderItemPrice(item.total, decimalSeparator);
 
       const okQty = setOrderItemInputValue(qtyInput, item.qty);
-      const okSubtotal = setOrderItemInputValue(subtotalInput, item.total);
-      const okTotal = setOrderItemInputValue(totalInput, item.total);
+      const okSubtotal = setOrderItemInputValue(subtotalInput, formattedTotal);
+      const okTotal = setOrderItemInputValue(totalInput, formattedTotal);
 
       if (okQty || okSubtotal || okTotal) updated++;
     });
