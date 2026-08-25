@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WP Admin Панель для ЧБ
 // @namespace    https://github.com/blackowl0192/script_folder
-// @version      1.9.7
+// @version      1.9.8
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
 // @author       Black Owl
 // @match        *://*/wp-admin/*
@@ -1158,9 +1158,25 @@
     // 1. Удалить скидки
     qsa('.wc-order-item-discount').forEach(e => e.remove());
 
-    // 2. Удалить строки оплаты с via Payment / via Card
+    // 2. Сократить Payment via Payment by card (...) до Payment via (...).
+    // Значение в скобках может быть любым: ApplePay, GooglePay и т. д.
+    // Остальные старые строки оплаты с via Payment / via Card удалить.
     qsa('.description').forEach(el => {
       const text = el.textContent.replace(/\s+/g, ' ').trim();
+
+      const cardPaymentMatch = text.match(
+        /Payment\s+via\s+Payment\s+by\s+card\s*\(([^()]+)\)/i
+      );
+
+      if (cardPaymentMatch) {
+        const paymentName = cardPaymentMatch[1].trim();
+        el.textContent = text.replace(
+          /Payment\s+via\s+Payment\s+by\s+card\s*\([^()]+\)/i,
+          `Payment via ${paymentName}`
+        );
+        return;
+      }
+
       if (/\bvia\b/i.test(text) && /(payment|card)/i.test(text)) {
         el.remove();
       }
