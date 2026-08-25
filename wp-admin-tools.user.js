@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WP Admin Панель для ЧБ
 // @namespace    https://github.com/blackowl0192/script_folder
-// @version      1.9.8
+// @version      1.9.9
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
 // @author       Black Owl
 // @match        *://*/wp-admin/*
@@ -1177,7 +1177,7 @@
         return;
       }
 
-      if (/\bvia\b/i.test(text) && /(payment|card)/i.test(text)) {
+      if (/\bvia\b.*\b(payment|card)\b/i.test(text)) {
         el.remove();
       }
     });
@@ -1197,6 +1197,27 @@
     if (clearBtn && clearBtn.nextSibling) {
       clearBtn.nextSibling.textContent = clearBtn.nextSibling.textContent.replace(/#\d+\s–\s/, '');
     }
+
+    // 5. Строка оплаты на разных сайтах может находиться не в .description.
+    // Поэтому заменяем её во всех текстовых узлах страницы, сохраняя HTML-разметку.
+    const paymentTextPattern = /Payment\s+via\s+Payment\s+by\s+card\s*\(([^()]+)\)/gi;
+    const textWalker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const paymentTextNodes = [];
+
+    while (textWalker.nextNode()) {
+      if (paymentTextPattern.test(textWalker.currentNode.nodeValue || '')) {
+        paymentTextNodes.push(textWalker.currentNode);
+      }
+      paymentTextPattern.lastIndex = 0;
+    }
+
+    paymentTextNodes.forEach(textNode => {
+      textNode.nodeValue = textNode.nodeValue.replace(
+        paymentTextPattern,
+        (_, paymentName) => `Payment via ${paymentName.trim()}`
+      );
+      paymentTextPattern.lastIndex = 0;
+    });
 
     showStatus('ЧБ-очистка ордера выполнена', 'ok');
     return true;
