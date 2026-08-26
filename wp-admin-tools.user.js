@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WP Admin Панель для ЧБ
 // @namespace    https://github.com/blackowl0192/script_folder
-// @version      1.9.9
+// @version      1.9.10
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
 // @author       Black Owl
 // @match        *://*/wp-admin/*
@@ -1158,20 +1158,20 @@
     // 1. Удалить скидки
     qsa('.wc-order-item-discount').forEach(e => e.remove());
 
-    // 2. Сократить Payment via Payment by card (...) до Payment via (...).
-    // Значение в скобках может быть любым: ApplePay, GooglePay и т. д.
+    // 2. Сократить Payment via любой текст (...) до Payment via (...).
+    // Например: Payment via Bank card (ApplePay) -> Payment via ApplePay.
     // Остальные старые строки оплаты с via Payment / via Card удалить.
     qsa('.description').forEach(el => {
       const text = el.textContent.replace(/\s+/g, ' ').trim();
 
       const cardPaymentMatch = text.match(
-        /Payment\s+via\s+Payment\s+by\s+card\s*\(([^()]+)\)/i
+        /Payment\s+via\s+[^()\r\n]*\(([^()]+)\)/i
       );
 
       if (cardPaymentMatch) {
         const paymentName = cardPaymentMatch[1].trim();
         el.textContent = text.replace(
-          /Payment\s+via\s+Payment\s+by\s+card\s*\([^()]+\)/i,
+          /Payment\s+via\s+[^()\r\n]*\([^()]+\)/i,
           `Payment via ${paymentName}`
         );
         return;
@@ -1200,7 +1200,7 @@
 
     // 5. Строка оплаты на разных сайтах может находиться не в .description.
     // Поэтому заменяем её во всех текстовых узлах страницы, сохраняя HTML-разметку.
-    const paymentTextPattern = /Payment\s+via\s+Payment\s+by\s+card\s*\(([^()]+)\)/gi;
+    const paymentTextPattern = /Payment\s+via\s+[^()\r\n]*\(([^()]+)\)/gi;
     const textWalker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     const paymentTextNodes = [];
 
