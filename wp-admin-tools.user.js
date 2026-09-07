@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WP Admin Панель для ЧБ
 // @namespace    https://github.com/blackowl0192/script_folder
-// @version      1.9.12
+// @version      1.9.13
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
 // @author       Black Owl
 // @match        *://*/wp-admin/*
@@ -1605,15 +1605,6 @@
       return false;
     }
 
-    const dataRows = qsa('tr', tableBody).filter(row =>
-      !row.classList.contains('no-items') && qs('td', row)
-    );
-
-    if (dataRows.length) {
-      showStatus('Шаблон не создан: таблица уже содержит записи', 'warn');
-      return false;
-    }
-
     const userNameInput = qs('#bo-log-template-user-name', app);
     const userName = userNameInput ? userNameInput.value.trim() : '';
 
@@ -1624,6 +1615,9 @@
     }
 
     const siteOrigin = window.location.origin;
+
+    // Кнопка всегда пересоздаёт таблицу: удаляет старые строки
+    // и оставляет одну новую шаблонную запись.
     tableBody.innerHTML = `
       <tr>
         <th scope="row" class="check-column">
