@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WP Admin Панель для ЧБ
 // @namespace    https://github.com/blackowl0192/script_folder
-// @version      1.9.14
+// @version      1.9.15
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
 // @author       Black Owl
 // @match        *://*/wp-admin/*
@@ -735,6 +735,51 @@
     fullscreenBtn.textContent = '❐';
     fullscreenBtn.title = 'Вернуть прежний размер';
   }
+
+  /**
+   * Не позволяет стилям сайта или старым координатам скрыть панель.
+   * Если панель оказалась за пределами экрана, возвращает её в видимую область.
+   */
+  function ensurePanelVisible() {
+    if (!app.isConnected) return;
+
+    app.style.setProperty('display', 'block', 'important');
+    app.style.setProperty('visibility', 'visible', 'important');
+    app.style.setProperty('opacity', '1', 'important');
+    app.style.setProperty('position', 'fixed', 'important');
+    app.style.setProperty('z-index', '2147483647', 'important');
+
+    if (app.classList.contains('bo-fullscreen')) return;
+
+    let rect = app.getBoundingClientRect();
+
+    if (rect.width > window.innerWidth) {
+      app.style.width = `${Math.max(390, window.innerWidth - 20)}px`;
+    }
+
+    if (rect.height > window.innerHeight) {
+      app.style.height = `${Math.max(280, window.innerHeight - 20)}px`;
+    }
+
+    rect = app.getBoundingClientRect();
+    const isOutsideViewport =
+      rect.right < 48 ||
+      rect.bottom < 48 ||
+      rect.left > window.innerWidth - 48 ||
+      rect.top > window.innerHeight - 48;
+
+    if (isOutsideViewport) {
+      const safeLeft = Math.max(10, window.innerWidth - Math.min(rect.width, window.innerWidth - 20) - 10);
+      app.style.left = `${safeLeft}px`;
+      app.style.top = '20px';
+      saveState({ left: safeLeft, top: 20 });
+    }
+  }
+
+  ensurePanelVisible();
+  setTimeout(ensurePanelVisible, 500);
+  setTimeout(ensurePanelVisible, 2000);
+  window.addEventListener('resize', ensurePanelVisible);
 
   /************************************************************
    * 8. ВКЛАДКА 1 — ДОБАВЛЕНИЕ ЮЗЕРА В БД
