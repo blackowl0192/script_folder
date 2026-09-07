@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WP Admin Панель для ЧБ
 // @namespace    https://github.com/blackowl0192/script_folder
-// @version      1.9.11
+// @version      1.9.12
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
 // @author       Black Owl
 // @match        *://*/wp-admin/*
@@ -576,6 +576,8 @@
               Меняет IP, дату, дублирует строки и распределяет время по диапазону.
             </div>
 
+            <label class="bo-label">Имя User для шаблонной записи</label>
+            <input id="bo-log-template-user-name" class="bo-input" placeholder="Wassim Elghazi">
             <button class="bo-btn green" id="bo-log-create-template" style="width:100%;margin-bottom:10px;">Создать шаблонную запись</button>
 
             <label class="bo-label">IP</label>
@@ -1612,6 +1614,15 @@
       return false;
     }
 
+    const userNameInput = qs('#bo-log-template-user-name', app);
+    const userName = userNameInput ? userNameInput.value.trim() : '';
+
+    if (!userName) {
+      showStatus('Введите имя User для шаблонной записи', 'error');
+      if (userNameInput) userNameInput.focus();
+      return false;
+    }
+
     const siteOrigin = window.location.origin;
     tableBody.innerHTML = `
       <tr>
@@ -1649,7 +1660,10 @@
         </td>
       </tr>`;
 
-    showStatus('Шаблонная запись ЛОГ создана', 'ok');
+    const templateUserLink = qs('td.user.column-user a.tooltip', tableBody);
+    if (templateUserLink) templateUserLink.textContent = userName;
+
+    showStatus(`Шаблонная запись ЛОГ создана для ${userName}`, 'ok');
     return true;
   }
 
@@ -2038,6 +2052,7 @@
       'bo-order-tx',
       'bo-order-items-data',
       'bo-log-ip',
+      'bo-log-template-user-name',
       'bo-log-date',
       'bo-log-duplicate-count',
       'bo-log-time-from',
