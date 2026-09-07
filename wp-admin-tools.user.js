@@ -67,7 +67,9 @@
     'yourcourse.shop',
     'cs2stock.com',
     'dota2stock.com',
-    'easytasks.org'
+    'easytasks.org',
+    'learnmarket.net',
+    'bestseminar.net'
     
   ];
 
