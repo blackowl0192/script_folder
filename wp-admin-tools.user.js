@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WP Admin Панель для ЧБ
 // @namespace    https://github.com/blackowl0192/script_folder
-// @version      1.9.10
+// @version      1.9.11
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
 // @author       Black Owl
 // @match        *://*/wp-admin/*
@@ -575,6 +575,8 @@
             <div class="bo-note">
               Меняет IP, дату, дублирует строки и распределяет время по диапазону.
             </div>
+
+            <button class="bo-btn green" id="bo-log-create-template" style="width:100%;margin-bottom:10px;">Создать шаблонную запись</button>
 
             <label class="bo-label">IP</label>
             <input id="bo-log-ip" class="bo-input" placeholder="192.168.1.1">
@@ -1585,6 +1587,72 @@
   /************************************************************
    * 10. ВКЛАДКА 3 — РЕДАКТИРОВАНИЕ ЛОГ
    ************************************************************/
+  function findLogTableBody() {
+    const logTable = qsa('table.wp-list-table').find(table =>
+      qs('.column-crtd, .column-scip, .column-event_type, .column-mesg', table)
+    );
+
+    return logTable ? qs('tbody', logTable) : qs('table tbody');
+  }
+
+  function createLogTemplateRow() {
+    const tableBody = findLogTableBody();
+
+    if (!tableBody) {
+      showStatus('Таблица ЛОГ не найдена', 'warn');
+      return false;
+    }
+
+    const dataRows = qsa('tr', tableBody).filter(row =>
+      !row.classList.contains('no-items') && qs('td', row)
+    );
+
+    if (dataRows.length) {
+      showStatus('Шаблон не создан: таблица уже содержит записи', 'warn');
+      return false;
+    }
+
+    const siteOrigin = window.location.origin;
+    tableBody.innerHTML = `
+      <tr>
+        <th scope="row" class="check-column">
+          <label class="screen-reader-text" for="wp_wsal_occurrences_1809">Select id</label>
+          <input type="checkbox" name="wp_wsal_occurrences[]" id="wp_wsal_occurrences_1809" value="1809">
+        </th>
+        <td class="type column-type has-row-actions column-primary hidden" data-colname="ID">
+          <span class="log-disable" style="cursor: pointer;">1000 </span>
+          <button type="button" class="toggle-row"><span class="screen-reader-text">Show more details</span></button>
+        </td>
+        <td class="code column-code hidden" data-colname="Severity">
+          <a class="tooltip" href="#" data-darktooltip="Low" style="cursor: pointer;">
+            <span style="display:none; visibility:hidden">Low</span>
+            <span class="log-type log-type-250 log-type-wsal_low"></span>
+          </a>
+        </td>
+        <td class="crtd column-crtd" data-colname="Date">September 7, 2026<br>10:27:07.000&nbsp;am</td>
+        <td class="user column-user" data-colname="User">
+          <div style="float:left; margin:5px;">
+            <img alt="" src="https://secure.gravatar.com/avatar/611048e6d727d4aec614d4ce777950de87159c7b29e934f035c0e3af88242e0e?s=32&amp;d=mm&amp;r=g" srcset="https://secure.gravatar.com/avatar/611048e6d727d4aec614d4ce777950de87159c7b29e934f035c0e3af88242e0e?s=64&amp;d=mm&amp;r=g 2x" class="avatar avatar-32 photo" height="32" width="32" loading="lazy" decoding="async">
+          </div>
+          <span style="width:60%;float:left;">
+            <a class="tooltip" data-darktooltip="&lt;strong&gt;Username: &lt;/strong&gt;id0914527709&lt;/br&gt;&lt;strong&gt;Email: &lt;/strong&gt;elghaziyassine87@gmail.com&lt;/br&gt;&lt;strong&gt;Nickname: &lt;/strong&gt;id0914527709&lt;/br&gt;&lt;/br&gt;" data-user="id0914527709" href="${siteOrigin}/wp-admin/user-edit.php?user_id=26" target="_blank" style="cursor: pointer;">Wassim Elghazi</a><br>Subscriber
+          </span>
+        </td>
+        <td class="scip column-scip" data-colname="IP">
+          <a target="_blank" href="https://whatismyipaddress.com/ip/2a03:f680:fe04:5e2d:18ca:a03:c9cf:a1f4?utm_source=plugin&amp;utm_medium=referral&amp;utm_campaign=wsal">2a03:f680:fe04:5e2d:18ca:a03:c9cf:a1f4</a>
+        </td>
+        <td class="object column-object hidden" data-colname="Object">User</td>
+        <td class="event_type column-event_type" data-colname="Event Type">Login</td>
+        <td class="mesg column-mesg hidden" data-colname="Message"><div id="Event1809">User logged in.</div></td>
+        <td class="data column-data" data-colname="">
+          <a class="more-info button button-secondary data-event-inspector-link" data-darktooltip="View all details of this change" data-inspector-active-text="Close inspector." title="Event data inspector" href="${siteOrigin}/wp-admin/admin-ajax.php?action=AjaxInspector&amp;occurrence=1809" style="cursor: pointer;">More details...</a>
+        </td>
+      </tr>`;
+
+    showStatus('Шаблонная запись ЛОГ создана', 'ok');
+    return true;
+  }
+
   function timeToSeconds(t) {
     const parts = String(t).split(':').map(Number);
     const h = parts[0] || 0;
@@ -1920,6 +1988,10 @@
   }
 
   function initLogTab() {
+    qs('#bo-log-create-template', app).addEventListener('click', (e) => {
+      if (createLogTemplateRow()) flashButton(e.currentTarget, '✅ Создано');
+    });
+
     qs('#bo-log-change-ip', app).addEventListener('click', (e) => {
       if (changeLogIP()) flashButton(e.currentTarget, '✅ Готово');
     });
