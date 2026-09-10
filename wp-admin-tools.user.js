@@ -553,14 +553,14 @@
           <div class="bo-section">
             <div class="bo-section-title">Редактирование ордера ЧБ</div>
             <div class="bo-note">
-              Заполняет дату ордера, Transaction ID, ставит статус Completed и выполняет очистку ЧБ.
+              Заполняет дату ордера, PAN, ставит статус Completed и выполняет очистку ЧБ.
             </div>
 
             <label class="bo-label">Дата ордера</label>
             <input id="bo-order-date" class="bo-input" placeholder="21.10.2025 21:00:53">
 
-            <label class="bo-label">Transaction ID</label>
-            <input id="bo-order-tx" class="bo-input" placeholder="Transaction ID">
+            <label class="bo-label">PAN</label>
+            <input id="bo-order-tx" class="bo-input" placeholder="PAN">
 
             <div class="bo-btn-row">
               <button class="bo-btn green" id="bo-order-apply">Применить</button>
