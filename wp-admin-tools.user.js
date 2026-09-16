@@ -70,6 +70,7 @@
     'easytasks.org',
     'learnmarket.net',
     'bestseminar.net',
+    'freelanceweb.online',
     'xxlcs2.com',
     'cs2lux.com',
     'dota2lux.com'
