@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WP Admin Панель для ЧБ
 // @namespace    https://github.com/blackowl0192/script_folder
-// @version      1.9.19
+// @version      1.9.20
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
 // @author       Black Owl
 // @match        *://*/wp-admin/*
@@ -1245,6 +1245,16 @@
     // 2. Сформировать надпись оплаты на основании значения из поля PAN.
     qsa('.description').forEach(el => {
       const text = el.textContent.replace(/\s+/g, ' ').trim();
+
+      // Удалить всю строку с датой и служебной надписью:
+      // 16.09.2026 via Payment by card
+      if (/^\d{1,2}\.\d{1,2}\.\d{4}\s+via\s+Payment\s+by\s+card$/i.test(text)) {
+        const tableRow = el.closest('tr');
+        if (tableRow) tableRow.remove();
+        else el.remove();
+        return;
+      }
+
       if (/Payment\s+via/i.test(text)) {
         el.textContent = text.replace(/Payment\s+via[\s\S]*$/i, paymentText);
       }
