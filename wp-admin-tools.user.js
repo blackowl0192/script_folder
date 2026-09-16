@@ -69,7 +69,10 @@
     'dota2stock.com',
     'easytasks.org',
     'learnmarket.net',
-    'bestseminar.net'
+    'bestseminar.net',
+    'xxlcs2.com',
+    'cs2lux.com',
+    'dota2lux.com'
     
   ];
 
