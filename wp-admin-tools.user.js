@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WP Admin Панель для ЧБ
 // @namespace    https://github.com/blackowl0192/script_folder
-// @version      1.9.18
+// @version      1.9.19
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
 // @author       Black Owl
 // @match        *://*/wp-admin/*
@@ -1205,34 +1205,48 @@
     return true;
   }
 
+  function buildPaymentTextFromPan() {
+    const panInput = qs('#bo-order-tx', app);
+    const pan = panInput ? panInput.value.trim() : '';
+
+    if (!pan) {
+      showStatus('Сначала укажите значение в поле PAN', 'error');
+      if (panInput) panInput.focus();
+      return null;
+    }
+
+    const normalizedWallet = pan.toLowerCase().replace(/[\s_-]+/g, '');
+
+    if (normalizedWallet === 'applepay') return 'Payment via ApplePay';
+    if (normalizedWallet === 'googlepay') return 'Payment via GooglePay';
+
+    const digitsCount = (pan.match(/\d/g) || []).length;
+    const isCardPan = /^[\d*\s-]+$/.test(pan) && digitsCount >= 6;
+
+    if (isCardPan) {
+      return `Payment via Payment by card (${pan})`;
+    }
+
+    showStatus('PAN должен содержать ApplePay, GooglePay или номер/маску карты', 'error');
+    if (panInput) panInput.focus();
+    return null;
+  }
+
   function fixChbOrderView() {
+    const paymentText = buildPaymentTextFromPan();
+    if (!paymentText) return false;
+
     // 0. Если номер ордера в заголовке короче 9 цифр — заменить на 10-значный
     fixShortOrderHeadingNumber();
 
     // 1. Удалить скидки
     qsa('.wc-order-item-discount').forEach(e => e.remove());
 
-    // 2. Сократить Payment via любой текст (...) до Payment via (...).
-    // Например: Payment via Bank card (ApplePay) -> Payment via ApplePay.
-    // Остальные старые строки оплаты с via Payment / via Card удалить.
+    // 2. Сформировать надпись оплаты на основании значения из поля PAN.
     qsa('.description').forEach(el => {
       const text = el.textContent.replace(/\s+/g, ' ').trim();
-
-      const cardPaymentMatch = text.match(
-        /Payment\s+via\s+[^()\r\n]*\(([^()]+)\)/i
-      );
-
-      if (cardPaymentMatch) {
-        const paymentName = cardPaymentMatch[1].trim();
-        el.textContent = text.replace(
-          /Payment\s+via\s+[^()\r\n]*\([^()]+\)/i,
-          `Payment via ${paymentName}`
-        );
-        return;
-      }
-
-      if (/\bvia\b.*\b(payment|card)\b/i.test(text)) {
-        el.remove();
+      if (/Payment\s+via/i.test(text)) {
+        el.textContent = text.replace(/Payment\s+via[\s\S]*$/i, paymentText);
       }
     });
 
@@ -1252,9 +1266,9 @@
       clearBtn.nextSibling.textContent = clearBtn.nextSibling.textContent.replace(/#\d+\s–\s/, '');
     }
 
-    // 5. Строка оплаты на разных сайтах может находиться не в .description.
-    // Поэтому заменяем её во всех текстовых узлах страницы, сохраняя HTML-разметку.
-    const paymentTextPattern = /Payment\s+via\s+[^()\r\n]*\(([^()]+)\)/gi;
+    // 5. На разных сайтах строка оплаты может находиться не в .description.
+    // Заменяем известные варианты во всех текстовых узлах страницы.
+    const paymentTextPattern = /Payment\s+via\s+(?:[^()\r\n]*\([^()\r\n]*\)|Apple\s*Pay|Google\s*Pay)/gi;
     const textWalker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     const paymentTextNodes = [];
 
@@ -1268,12 +1282,12 @@
     paymentTextNodes.forEach(textNode => {
       textNode.nodeValue = textNode.nodeValue.replace(
         paymentTextPattern,
-        (_, paymentName) => `Payment via ${paymentName.trim()}`
+        paymentText
       );
       paymentTextPattern.lastIndex = 0;
     });
 
-    showStatus('ЧБ-очистка ордера выполнена', 'ok');
+    showStatus(`ЧБ-очистка выполнена: ${paymentText}`, 'ok');
     return true;
   }
 
