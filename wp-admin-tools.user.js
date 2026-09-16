@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WP Admin Панель для ЧБ
 // @namespace    https://github.com/blackowl0192/script_folder
-// @version      1.9.17
+// @version      1.9.18
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
 // @author       Black Owl
 // @match        *://*/wp-admin/*
@@ -74,7 +74,6 @@
     'xxlcs2.com',
     'cs2lux.com',
     'dota2lux.com'
-    
   ];
 
   const currentHost = window.location.hostname.replace(/^www\./, '');
