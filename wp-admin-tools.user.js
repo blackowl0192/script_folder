@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WP Admin Панель для ЧБ
 // @namespace    https://github.com/blackowl0192/script_folder
-// @version      1.9.20
+// @version      1.9.21
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
 // @author       Black Owl
 // @match        *://*/wp-admin/*
@@ -1246,9 +1246,14 @@
     qsa('.description').forEach(el => {
       const text = el.textContent.replace(/\s+/g, ' ').trim();
 
-      // Удалить всю строку с датой и служебной надписью:
+      // В таблице итогов удалить всю служебную строку независимо от формата даты:
       // 16.09.2026 via Payment by card
-      if (/^\d{1,2}\.\d{1,2}\.\d{4}\s+via\s+Payment\s+by\s+card$/i.test(text)) {
+      // September 22, 2026 via Payment by card
+      const isOrderTotalsPaymentRow =
+        el.closest('table.wc-order-totals') &&
+        /\bvia\s+Payment\s+by\s+card\s*$/i.test(text);
+
+      if (isOrderTotalsPaymentRow) {
         const tableRow = el.closest('tr');
         if (tableRow) tableRow.remove();
         else el.remove();
