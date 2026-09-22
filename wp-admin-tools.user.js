@@ -73,7 +73,8 @@
     'freelanceweb.online',
     'xxlcs2.com',
     'cs2lux.com',
-    'dota2lux.com'
+    'dota2lux.com',
+    'xxldota2.com'
   ];
 
   const currentHost = window.location.hostname.replace(/^www\./, '');
