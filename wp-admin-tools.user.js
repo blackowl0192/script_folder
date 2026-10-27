@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WP Admin Панель для ЧБ
 // @namespace    https://github.com/blackowl0192/script_folder
-// @version      1.9.22
+// @version      1.9.24
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
 // @author       Black Owl
 // @match        *://*/wp-admin/*
@@ -1238,6 +1238,16 @@
     return null;
   }
 
+  function cleanAdminPageUrl(pageName) {
+    const url = new URL(window.location.href);
+
+    if (url.searchParams.get('page') !== pageName) return false;
+
+    const cleanUrl = `${url.origin}${url.pathname}?page=${encodeURIComponent(pageName)}`;
+    window.history.replaceState(window.history.state, document.title, cleanUrl);
+    return true;
+  }
+
   function fixChbOrderView() {
     const paymentText = buildPaymentTextFromPan();
     if (!paymentText) return false;
@@ -1309,6 +1319,7 @@
       paymentTextPattern.lastIndex = 0;
     });
 
+    cleanAdminPageUrl('wc-orders');
     showStatus(`ЧБ-очистка выполнена: ${paymentText}`, 'ok');
     return true;
   }
@@ -2116,7 +2127,10 @@
         return;
       }
 
-      if (applyIncreasingTimes(from, to, created)) flashButton(e.currentTarget, '✅ Готово');
+      if (applyIncreasingTimes(from, to, created)) {
+        cleanAdminPageUrl('wsal-auditlog');
+        flashButton(e.currentTarget, '✅ Готово');
+      }
     });
   }
 
