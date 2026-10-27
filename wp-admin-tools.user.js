@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WP Admin Панель для ЧБ
 // @namespace    https://github.com/blackowl0192/script_folder
-// @version      1.9.21
+// @version      1.9.22
 // @description  Единая панель для WP Admin: добавление юзера в БД, редактирование ордера ЧБ, редактирование ЛОГ
 // @author       Black Owl
 // @match        *://*/wp-admin/*
@@ -74,7 +74,12 @@
     'xxlcs2.com',
     'cs2lux.com',
     'dota2lux.com',
-    'xxldota2.com'
+    'xxldota2.com',
+    'flprofies.com',
+    'educationwebs.com',
+    'flmaster.net'
+    
+    
   ];
 
   const currentHost = window.location.hostname.replace(/^www\./, '');
@@ -1250,9 +1255,10 @@
       // В таблице итогов удалить всю служебную строку независимо от формата даты:
       // 16.09.2026 via Payment by card
       // September 22, 2026 via Payment by card
+      // May 18, 2026 via Bank card
       const isOrderTotalsPaymentRow =
         el.closest('table.wc-order-totals') &&
-        /\bvia\s+Payment\s+by\s+card\s*$/i.test(text);
+        /\bvia\s+(?:Payment\s+by\s+card|Bank\s+card)\s*$/i.test(text);
 
       if (isOrderTotalsPaymentRow) {
         const tableRow = el.closest('tr');
