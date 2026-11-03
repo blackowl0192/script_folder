@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tutor LMS — Courses & Tutors Manager (Multi-site)
 // @namespace    yourcourse.local.tools
-// @version      1.2.2
+// @version      1.2.3
 // @description  Excel → Tutor LMS на 6 сайтах: курсы, преподаватели, фото, Bio, проверки, отдельные очереди по доменам.
 // @match        https://yourcourse.shop/wp-admin/*
 // @match        https://yourcourse.shop/wp-login.php*
@@ -198,10 +198,32 @@
   function imageKey(src){
     if(!src)return '';try{const u=new URL(src,ORIGIN);return u.origin+decodeURIComponent(u.pathname).replace(/-\d+x\d+(?=\.[^.]+$)/,'');}catch{return String(src);}
   }
-  function imagePreview(){
-    const blocks=[...document.querySelectorAll('[data-cy="media-preview"]')].filter(e=>e.querySelector('[data-cy="replace-media"]'));
-    if(blocks.length>1)throw fail('Несколько блоков обложки. Нельзя однозначно выбрать изображение.');
-    return blocks[0]?.querySelector('img')?.getAttribute('src')||'';
+  // Compare real image identity rather than exact thumbnail/CDN URL.
+  function courseImageStem(src){
+    if(!src)return '';
+    try{
+      const name=decodeURIComponent(String(src).split(/[?#]/)[0].split('/').pop()||'');
+      return name.replace(/\.(?:jpe?g|png|webp|gif|avif)$/i,'')
+        .replace(/(?:-(?:\d+x\d+|scaled|rotated))+$/gi,'').toLowerCase();
+    }catch{return '';}
+  }
+  function sameCourseImage(actual,expected){
+    const a=courseImageStem(actual),b=courseImageStem(expected);
+    return !!(a&&b&&a===b);
+  }
+  function imagePreview(preferredKey=''){
+    const all=[...document.querySelectorAll('[data-cy="media-preview"]')];
+    const marked=all.filter(e=>e.querySelector('[data-cy="replace-media"]'));
+    if(marked.length>1)throw fail('Несколько блоков обложки. Нельзя однозначно выбрать изображение.');
+    if(marked.length===1)return marked[0].querySelector('img')?.getAttribute('src')||'';
+    // Tutor LMS may replace the preview block and omit the button temporarily.
+    const withImages=all.filter(e=>e.querySelector('img[src]'));
+    if(withImages.length===1)return withImages[0].querySelector('img').getAttribute('src')||'';
+    if(preferredKey){
+      const matches=withImages.filter(e=>courseImageStem(e.querySelector('img').getAttribute('src'))===String(preferredKey).toLowerCase());
+      if(matches.length===1)return matches[0].querySelector('img').getAttribute('src')||'';
+    }
+    return '';
   }
   function imageMatch(item,key){
     let filename='';try{filename=imageKey(item.querySelector('img')?.src).split('/').pop().replace(/\.[^.]+$/,'');}catch{}
@@ -234,8 +256,22 @@
     const expected=imageKey(item.querySelector('img')?.src);if(!expected)throw fail('Не удалось прочитать адрес картинки.');
     const select=one('.media-button-select',modal);if(select.disabled)throw fail('Select недоступна.');guard();select.click();
     await waitFor(()=>!visible(modal),'закрытие медиатеки');
-    await waitFor(()=>imageKey(imagePreview())===expected,'новая обложка');
-    log('info',`Картинка ${key} выбрана. Заполняем остальные поля.`,r);return expected;
+    let previewSrc='';
+    try{
+      previewSrc=await waitFor(()=>{
+        const src=imagePreview(key);
+        return sameCourseImage(src,expected)?src:null;
+      },'новая обложка',30000);
+    }catch(e){
+      if(!/Время ожидания истекло/.test(e.message||''))throw e;
+      const previews=[...document.querySelectorAll('[data-cy="media-preview"] img')]
+        .map(img=>img.getAttribute('src')||'').slice(0,5);
+      throw fail('Выбор фото выполнен, но новая обложка не подтверждена. img='+key+'; ожидалось: '+expected+'; превью: '+JSON.stringify(previews)+'. Update не нажат.');
+    }
+    if(imageKey(previewSrc)!==expected)
+      log('info','Превью использует другой размер, формат или CDN: '+previewSrc+'. Имя изображения совпадает с img='+key+'.',r);
+    log('info','Картинка '+key+' подтверждена по имени файла. Заполняем остальные поля.',r);
+    return expected;
   }
   async function ready(allowStop=false){
     await waitFor(()=>one('input[name="post_title"]',document,false)&&one('input[name="course_price"]',document,false)&&one('input[name="course_sale_price"]',document,false)&&one('button[data-cy="course-builder-submit-button"]',document,false),'поля Tutor LMS',45000,allowStop);
@@ -244,7 +280,7 @@
   function currentCourse(){try{return courseURL(location.href).id;}catch{return '';}}
   async function snapshot(allowStop=false){return {title:one('input[name="post_title"]').value,price:one('input[name="course_price"]').value,sale:one('input[name="course_sale_price"]').value,html:await readDescription(allowStop),slug:linkSlug(),url:publicLink()?.href||'',image:imageKey(imagePreview())};}
   function differences(actual,expected,persisted=false){const errors=[];
-    if(expected.image!==undefined&&actual.image!==expected.image)errors.push('Изображение курса');
+    if(expected.image!==undefined&&!sameCourseImage(actual.image,expected.image))errors.push('Изображение курса');
     if(actual.title!==expected.title)errors.push('Title');
     const sale=String(actual.sale??'').trim();
     if(sale!==''&&!(persisted&&state.settings.acceptZeroSale&&/^0+(?:[.,]0+)?$/.test(sale)))errors.push(`Sale Price не пустое (значение: ${JSON.stringify(sale)})`);
@@ -415,7 +451,7 @@
     const host=document.createElement('div');host.id='yc-course-manager';host.style.cssText='position:fixed;z-index:2147483646;inset:0;pointer-events:none';document.documentElement.append(host);
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style><button class="pill hidden" id="pill">Курсы · открыть панель</button><section class="panel" id="panel">
-      <header class="head" id="drag"><div class="logo">C</div><div><b>Course Manager</b><small>${esc(location.hostname)} · TUTOR LMS · v1.2.2</small></div><span class="spacer"></span><button class="icon" id="full" title="На весь экран">⛶</button><button class="icon" id="min" title="Свернуть">—</button></header>
+      <header class="head" id="drag"><div class="logo">C</div><div><b>Course Manager</b><small>${esc(location.hostname)} · TUTOR LMS · v1.2.3</small></div><span class="spacer"></span><button class="icon" id="full" title="На весь экран">⛶</button><button class="icon" id="min" title="Свернуть">—</button></header>
       <div class="body"><div class="stats"><div class="card"><b id="total">0</b><span>Курсов в файле</span></div><div class="card done"><b id="done">0</b><span>Проверено и готово</span></div><div class="card"><b id="pending">0</b><span>В очереди / работе</span></div><div class="card bad"><b id="errors">0</b><span>Ошибки / проверка</span></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current"><i class="dot" id="dot"></i><span id="current">Загрузите файл с курсами</span></div>
       <div class="actions"><button class="primary" id="start">▶ Начать</button><button id="one">Один курс</button><button id="pause">Ⅱ Пауза</button><button class="danger" id="stop">■ Стоп</button><button id="retry">Повторить ошибки</button><button id="report">↓ Отчёт</button></div>
