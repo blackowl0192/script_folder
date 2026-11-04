@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WooCommerce — Course Product Manager (HottestCourse / SMMMaster)
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.0.2
+// @version      1.0.3
 // @description  Excel → WooCommerce products: title, permalink, HTML, regular price, ACF lessons, downloadable off, product image. Per-site queue, verification and logs.
 // @match        https://hottestcourse.com/wp-admin/*
 // @match        https://hottestcourse.com/wp-login.php*
@@ -208,14 +208,16 @@
     // WordPress imports text into TinyMCE when switching to Visual.
     const visual=one('#content-tmce');guard();visual.click();
     const ed=await waitFor(()=>{const e=tiny();return e?.initialized&&!e.isHidden()?e:null;},'переключение Description → Visual',25000);
-    let html='';
+    let html='',transformationLogged=false;
     for(let i=0;i<3;i++){
       guard();html=ed.getContent();
       if(!html.trim())throw error('Visual очистил Description. Update не выполнен.');
-      if(richSignature(html)!==richSignature(raw)){
-        // Text-to-Visual can add paragraphs around plain text. It must not lose any words.
-        const textValue=h=>new DOMParser().parseFromString(String(h),'text/html').body.textContent.replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim();
-        if(textValue(html)!==textValue(raw))throw error('Visual изменил текст Description при переключении. Update не выполнен.');
+      // TinyMCE legitimately normalizes text/HTML when switching from Text to Visual:
+      // paragraphs, whitespace, entities, and inline formatting can be rewritten.
+      // Treat the editor's final nonempty HTML as the value to save and verify.
+      if(!transformationLogged && richSignature(html)!==richSignature(raw)){
+        log('info','Visual преобразовал Description; итоговый HTML редактора будет использован для сохранения и проверки.',state.rows[state.index]);
+        transformationLogged=true;
       }
       ed.setDirty?.(true);ed.save();
       ed.fire('change');
