@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WooCommerce — Course Product Manager (HottestCourse / SMMMaster)
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.0.1
+// @version      1.0.2
 // @description  Excel → WooCommerce products: title, permalink, HTML, regular price, ACF lessons, downloadable off, product image. Per-site queue, verification and logs.
 // @match        https://hottestcourse.com/wp-admin/*
 // @match        https://hottestcourse.com/wp-login.php*
@@ -79,6 +79,11 @@
     }
     const parts=s.split('.');if(parts[0].length>9)throw error('Слишком большая цена.');
     return `${String(Number(parts[0]))}.${(parts[1]||'').padEnd(2,'0')}`;
+  }
+  // Keep imported prices in normalized dot form for comparisons/storage.
+  // These WooCommerce shops require a decimal comma in the editable price field.
+  function wooPriceForInput(value){
+    return normalizePrice(value).replace('.',',');
   }
   function normalizeLessons(value){
     const s=String(value??'').trim();
@@ -424,7 +429,8 @@
           r.before=await snapshot();persist();
           await fill('input#title[name="post_title"]',r.name);
           await writeSlug(r.slug);
-          await fill('#_regular_price',r.price);
+          await fill('#_regular_price',wooPriceForInput(r.price));
+          log('info','Regular price заполнена в формате сайта: '+wooPriceForInput(r.price),r);
           const l=lessonsField();if(l.disabled||l.readOnly)throw error('ACF lessons заблокировано.');
           guard();l.focus();nativeValue(l,r.lessons);await sleep(150);
           if(String(Number(lessonsField().value))!==r.lessons)throw error('ACF lessons не приняло новое значение.');
@@ -451,7 +457,7 @@
           const fieldName=lessonsField().name;
           if(!fieldName||String(body.get(fieldName))!==r.lessons)throw error('POST form потеряла lessons. Update не выполнен.');
           if(body.has('_downloadable'))throw error('POST form всё ещё содержит Downloadable. Update не выполнен.');
-          if(String(body.get('_regular_price')||'')!==r.price)throw error('POST form содержит неправильную Regular price. Update не выполнен.');
+          if(String(body.get('_regular_price')||'')!==wooPriceForInput(r.price))throw error('POST form содержит неправильную Regular price (ожидалась десятичная запятая). Update не выполнен.');
           stage(r,'saving','Нажимаем Update; затем проверяем сохранение на новой странице');
           r.saveAt=Date.now();r.saveDoc=DOC;state.stopAfterVerify=single;persist();
           sessionStorage.setItem(TICKET,JSON.stringify({tab:tabId,run:state.run,id:r.id,kind:'verify',at:Date.now()}));
@@ -675,7 +681,7 @@
       <nav class="tabs"><button data-tab="queue">Очередь</button><button data-tab="processed">Обработанные</button><button data-tab="import" class="active">Импорт Excel</button><button data-tab="log">Журнал</button><button data-tab="settings">Настройки</button><button data-tab="help">Как работать</button></nav>
       <div class="view hidden" id="queue"><div class="tools"><input type="search" id="search" placeholder="Название, ID или img…"><select id="filter"><option value="all">Все статусы</option><option value="pending">В очереди</option><option value="error">Ошибка</option><option value="skipped">Пропущено</option></select></div><div id="rows"></div></div>
       <div class="view" id="import"><div class="tools"><button class="danger" id="reset">Очистить очередь и историю</button></div><div class="drop" id="drop"><label for="file">Выбрать Excel-файл</label><input id="file" type="file" accept=".xlsx,.xls,.csv" hidden><small>Или перетащите сюда · .xlsx / .xls / .csv</small><small id="filename">Данные Excel обрабатываются локально</small></div>
-      <div id="mapping" class="hidden"><div class="mapping"><label>ID товара</label><select id="map-id"></select><label>Name</label><select id="map-name"></select><label>Description (HTML)</label><select id="map-description"></select><label>Regular price</label><select id="map-price"></select><label>lessons</label><select id="map-lessons"></select><label>img (14 цифр)</label><select id="map-img"></select><label>Лист</label><select id="sheet"></select></div><p class="hint">При импорте цена 3.42€ станет 3.42. Колонка img — имя загруженного изображения из 14 цифр, НЕ WordPress attachment ID. Очередь перемешивается автоматически.</p><button class="primary" id="load">Загрузить в очередь</button></div>
+      <div id="mapping" class="hidden"><div class="mapping"><label>ID товара</label><select id="map-id"></select><label>Name</label><select id="map-name"></select><label>Description (HTML)</label><select id="map-description"></select><label>Regular price</label><select id="map-price"></select><label>lessons</label><select id="map-lessons"></select><label>img (14 цифр)</label><select id="map-img"></select><label>Лист</label><select id="sheet"></select></div><p class="hint">При импорте цена 3.42€ распознаётся как 3.42, а в поле WooCommerce записывается 3,42. Колонка img — имя загруженного изображения из 14 цифр, НЕ WordPress attachment ID. Очередь перемешивается автоматически.</p><button class="primary" id="load">Загрузить в очередь</button></div>
       <div class="notice">Строки проверяются до запуска. Новая загрузка заменяет текущую очередь; скачайте отчёт, если он нужен. Обрабатываются только товары сайта <b>${esc(SITE)}</b>.</div></div>
       <div class="view hidden" id="log"><div class="tools"><button id="downloadLog">↓ Скачать журнал</button><span class="hint">Последние 2000 событий</span></div><div id="logs"></div></div>
       <div class="view hidden" id="settings"><label class="setting"><div>Пауза между товарами<small>В секундах после проверки результата</small></div><input id="delay" type="number" min="1" max="60" value="3"></label><label class="setting"><input id="stopOnError" type="checkbox" checked><div>Останавливаться при ошибке<small>Рекомендуется: ошибка может оставить несохранённые изменения в редакторе</small></div></label><div class="setting"><div>Перемешивание Excel<small>Однократно при каждом импорте; исходные номера строк сохраняются</small></div><span class="tag done">Всегда</span></div><div class="setting"><div>Downloadable<small>Флажок снимается у каждого товара</small></div><span class="tag done">Всегда</span></div><button id="backup">↓ Резервная копия JSON</button></div>
