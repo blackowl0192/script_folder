@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WooCommerce — Course Product Manager (HottestCourse / SMMMaster)
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.0.3
+// @version      1.0.4
 // @description  Excel → WooCommerce products: title, permalink, HTML, regular price, ACF lessons, downloadable off, product image. Per-site queue, verification and logs.
 // @match        https://hottestcourse.com/wp-admin/*
 // @match        https://hottestcourse.com/wp-login.php*
@@ -450,12 +450,29 @@
           const form=button.form||document.querySelector('form#post');
           if(!form)throw error('Форма WordPress #post не найдена.');
           if(!form.contains(button))throw error('Кнопка Update не принадлежит форме товара.');
-          // Capture final posted content, not only the TinyMCE visual value.
-          if(ed?.initialized&&!ed.isHidden())ed.save();
+          // Explicitly synchronize the final Visual content with the submitted textarea.
+          // TinyMCE can serialize the same markup differently when Text/Visual is toggled.
+          // WordPress submits textarea#content, not the visible iframe document.
+          const contentField=form.querySelector('textarea#content[name="content"]');
+          if(!contentField||contentField.disabled)throw error('POST form не содержит доступное поле Description #content. Update не выполнен.');
+          if(!ed?.initialized||ed.isHidden())throw error('Visual недоступен перед Update. Сохранение остановлено.');
+          const visualHTML=ed.getContent();
+          if(!visualHTML.trim())throw error('Visual не содержит Description перед Update.');
+          if(richSignature(visualHTML)!==richSignature(normalized))
+            throw error('Visual изменил Description после проверки заполнения. Update не выполнен.');
+          ed.save();
+          if(contentField.value!==visualHTML){
+            // Set only the POST field, without triggering a second TinyMCE re-render.
+            const setter=Object.getOwnPropertyDescriptor(unsafeWindow.HTMLTextAreaElement.prototype,'value').set;
+            setter.call(contentField,visualHTML);
+            log('info','Description синхронизировано: содержимое Visual перенесено в POST textarea.',r);
+          }
+          await sleep(200);guard();
           const body=new FormData(form);
           if(body.get('post_title')!==r.name)throw error('POST form потеряла название. Update не выполнен.');
-          if(!body.has('content'))throw error('POST form не содержит Description. Update не выполнен.');
-          if(richSignature(body.get('content'))!==richSignature(normalized))throw error('POST form потеряла Description. Update не выполнен.');
+          if(body.getAll('content').length!==1)throw error('POST form должна содержать ровно одно поле Description. Update не выполнен.');
+          if(String(body.get('content')??'')!==visualHTML)
+            throw error('POST form не удерживает Description после синхронизации с Visual. Update не выполнен.');
           const fieldName=lessonsField().name;
           if(!fieldName||String(body.get(fieldName))!==r.lessons)throw error('POST form потеряла lessons. Update не выполнен.');
           if(body.has('_downloadable'))throw error('POST form всё ещё содержит Downloadable. Update не выполнен.');
