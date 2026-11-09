@@ -27,6 +27,7 @@
   const VERSION = '2.1.0';
   const DOMAIN = location.hostname;
   const PREFIX = 'sb-product-trash-v3:' + DOMAIN;
+  const OLD_LEASE = 'sb-product-trash-v2:' + DOMAIN + ':lease';
   const KEY = PREFIX + ':state';
   const LEASE = PREFIX + ':lease';
   const LAYOUT = PREFIX + ':layout';
@@ -93,6 +94,11 @@
     return lease && lease.id === tabId && lease.until > Date.now();
   }
   function claim() {
+    const previous = GM_getValue(OLD_LEASE, null);
+    if(previous && previous.until > Date.now()) {
+      toast('Другая вкладка ещё работает на старой версии скрипта. Остановите её, прежде чем начинать.');
+      return false;
+    }
     const lease = GM_getValue(LEASE, null);
     if (lease && lease.until > Date.now() && lease.id !== tabId) {
       toast('Удаление уже запущено в другой вкладке этого сайта. Сначала остановите его там.');
@@ -213,7 +219,7 @@
     if(!raw)throw new Error('Пустая ссылка product_link.');
     let u;
     try{u=new URL(raw,location.origin);}catch{throw new Error('Неверный URL product_link.');}
-    if(u.origin!==location.origin||u.protocol!=='https:')throw new Error('Ссылка относится к другому сайту или использует не HTTPS.');
+    if(u.origin!==location.origin||u.protocol!=='https:'||u.username||u.password)throw new Error('Ссылка относится к другому сайту или использует не HTTPS.');
     if(u.pathname!=='/wp-admin/post.php')throw new Error('Нужна ссылка вида /wp-admin/post.php?post=ID&action=edit.');
     const id=u.searchParams.get('post');
     if(!idValid(id))throw new Error('В product_link нет числового параметра post=ID.');
@@ -230,13 +236,16 @@
     if(!link)return null;
     let u;
     try{u=new URL(link.getAttribute('href'),location.href);}catch{return null;}
-    if(u.origin!==location.origin||u.pathname!=='/wp-admin/post.php'||
+    if(u.origin!==location.origin||u.username||u.password||u.pathname!=='/wp-admin/post.php'||
       u.searchParams.get('post')!==row.id||
       u.searchParams.get('action')!=='trash'||!u.searchParams.get('_wpnonce'))return null;
     return u.href;
   }
   function openProduct(row) {
     if(!isProductEditor(row)){
+      row.openAttempts=(row.openAttempts||0)+1;
+      if(row.openAttempts>2)return finalize(row,'not_found',
+        'По ссылке дважды не удалось открыть редактор товара. Возможна переадресация или отсутствие товара.');
       row.status='opening';row.message='Открываем ссылку товара.';
       state.phase='open';
       log('info','Переход к product_link: '+row.productLink,row);
@@ -558,7 +567,7 @@
       '<small>Или перетащите файл сюда</small><small id="filename">Файл не выбран</small></div>'+
       '<div class="hidden" id="mapping"><div class="mapping"><label for="sheet">Лист Excel</label><select id="sheet"></select>'+ 
       '<label>Столбец</label><strong id="linkColumn">—</strong></div>'+
-      '<p class="hint">Обязательный столбец: product_link. В нём укажите ссылки вида https://${DOMAIN}/wp-admin/post.php?post=3287&amp;action=edit. Другие столбцы не нужны. ID автоматически извлекается из ссылки.</p>'+
+      '<p class="hint">Обязательный столбец: product_link. В нём укажите ссылки вида https://'+esc(DOMAIN)+'/wp-admin/post.php?post=3287&amp;action=edit. Другие столбцы не нужны. ID автоматически извлекается из ссылки.</p>'+
       '<pre id="preview" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#f6f8fc;padding:10px;border-radius:9px"></pre>'+
       '<button class="primary" id="load">Загрузить в очередь</button></div>'+
       '<p class="hint">Каждый сайт хранит собственную очередь. Повторные ссылки на товар пропускаются; чужие домены блокируются.</p>'+
@@ -739,7 +748,7 @@
     $('#pause').disabled=!activeHere;
     $('#stop').disabled=!activeHere;
     $('#report').disabled=!state.rows.length;
-    $('#load').disabled=state.running||busy;
+    $('#load').disabled=state.running||busy||!book||linkColumn()<0;
     $('#reset').disabled=state.running||busy;
     $('#footer').textContent=state.updated?'Сохранено · '+new Date(state.updated).toLocaleTimeString('ru-RU'):
       'Очередь сохраняется автоматически';
