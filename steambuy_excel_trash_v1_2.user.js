@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SteamBuy — Product Trash Manager
 // @namespace    https://steambuy.pro/
-// @version      2.0.4
-// @description  Excel → поиск товара по ID в WordPress → Trash → следующий; очередь, журнал, отдельные списки ошибок, 7 сайтов.
+// @version      2.1.0
+// @description  Excel product_link → открыть редактор → Move to Trash → следующий; лог и отчёты, 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
 // @downloadURL  https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -24,15 +24,15 @@
 (() => {
   'use strict';
   // Version 2 uses a new queue key: old running 1.x jobs cannot trigger deletions after upgrade.
-  const VERSION = '2.0.4';
+  const VERSION = '2.1.0';
   const DOMAIN = location.hostname;
-  const PREFIX = 'sb-product-trash-v2:' + DOMAIN;
+  const PREFIX = 'sb-product-trash-v3:' + DOMAIN;
   const KEY = PREFIX + ':state';
   const LEASE = PREFIX + ':lease';
   const LAYOUT = PREFIX + ':layout';
   const TAB = PREFIX + ':tab-id';
   const LIST = location.origin + '/wp-admin/edit.php?post_type=product';
-  const MAX_SEARCH_PAGES = 15;
+  const MAX_VERIFY_PAGES = 15;
   const MAX_LOGS = 1500;
   const PAGESIZE = 25;
   const OK = 'done';
@@ -49,21 +49,21 @@
   const tabId = sessionStorage.getItem(TAB) || (Date.now().toString(36) + Math.random().toString(36).slice(2));
   sessionStorage.setItem(TAB, tabId);
   const defaults = () => ({
-    v: 2, filename: '', sheet: '', rows: [], logs: [], index: -1,
+    v: 3, filename: '', sheet: '', rows: [], logs: [], index: -1,
     phase: 'idle', running: false, paused: false, mode: 'batch', runCount: 0,
-    owner: '', pending: null, searchPages: 0, checkAttempts: 0,
+    owner: '', pending: null,
     settings: { delay: 2, stopOnError: false }, updated: '', started: ''
   });
   let state = GM_getValue(KEY, null) || defaults();
-  if (state.v !== 2 || !Array.isArray(state.rows)) state = defaults();
+  if (state.v !== 3 || !Array.isArray(state.rows)) state = defaults();
   state.settings = Object.assign({delay: 2, stopOnError: false}, state.settings || {});
   let root, panel, book = null, fileName = '';
   let activeTab = 'queue', filter = 'all', search = '', page = 0;
   let busy = false, moving = false, timer = null, heartbeat = null, expanded = false, dragging = null;
-  const labels = {pending:'Ожидает', searching:'Поиск', deleting:'Удаляется', verifying:'Проверка',
+  const labels = {pending:'Ожидает', opening:'Открытие', deleting:'Удаляется', verifying:'Проверка',
     done:'Удалён', not_found:'Не найден', failed:'Ошибка удаления', skipped:'Пропущен'};
   const statuses = {done:'done', failed:'bad', not_found:'bad', skipped:'neutral',
-    searching:'work', deleting:'work', verifying:'work', pending:'neutral'};
+    opening:'work', deleting:'work', verifying:'work', pending:'neutral'};
   function persist() {
     state.updated = now();
     GM_setValue(KEY, state);
@@ -116,7 +116,7 @@
   }
   function readState() {
     const fresh = GM_getValue(KEY, null);
-    if (fresh?.v === 2 && Array.isArray(fresh.rows)) state = fresh;
+    if (fresh?.v === 3 && Array.isArray(fresh.rows)) state = fresh;
   }
   function canEdit() {
     const lease = GM_getValue(LEASE,null);
@@ -130,16 +130,6 @@
       state.running=false;state.paused=true;persist();
     }
     return true;
-  }
-  function listUrl(s = '', status = '') {
-    const u = new URL(LIST);
-    if (status) u.searchParams.set('post_status',status);
-    if (s) u.searchParams.set('s',s);
-    return u.href;
-  }
-  function isList() {
-    const u = new URL(location.href);
-    return u.pathname.endsWith('/wp-admin/edit.php') && u.searchParams.get('post_type') === 'product';
   }
   function move(url, row) {
     if (moving) return;
@@ -216,222 +206,191 @@
     log('error','Обработка остановлена: ' + message,row);
     release();toast(message);
   }
-  function findRow(doc,id) {
-    const rows = Array.from(doc.querySelectorAll('#the-list tr[id^="post-"]'));
-    return rows.find(r => r.id === 'post-' + id) || null;
+
+  // A product_link must point to the editor of a product on the CURRENT site.
+  function parseProductLink(text) {
+    const raw=clean(text);
+    if(!raw)throw new Error('Пустая ссылка product_link.');
+    let u;
+    try{u=new URL(raw,location.origin);}catch{throw new Error('Неверный URL product_link.');}
+    if(u.origin!==location.origin||u.protocol!=='https:')throw new Error('Ссылка относится к другому сайту или использует не HTTPS.');
+    if(u.pathname!=='/wp-admin/post.php')throw new Error('Нужна ссылка вида /wp-admin/post.php?post=ID&action=edit.');
+    const id=u.searchParams.get('post');
+    if(!idValid(id))throw new Error('В product_link нет числового параметра post=ID.');
+    if(![null,'edit'].includes(u.searchParams.get('action')))throw new Error('Ссылка должна открывать редактор (action=edit), а не другое действие.');
+    u.searchParams.set('action','edit');u.hash='';
+    return {id,url:u.href};
   }
-  function getTitle(row) {
-    return clean((row.querySelector('a.row-title') ||
-      row.querySelector('.column-name strong a') ||
-      row.querySelector('.column-name a'))?.textContent);
+  function isProductEditor(row) {
+    const u=new URL(location.href);
+    return u.origin===location.origin&&u.pathname==='/wp-admin/post.php'&&
+      u.searchParams.get('action')==='edit'&&u.searchParams.get('post')===row.id;
   }
-  function trashLink(row,id) {
-    const link = row.querySelector('span.trash a.submitdelete, span.trash a');
-    if (!link) return null;
-    const href = link.getAttribute('href');
-    if (!href) return null;
-    const u = new URL(href,location.href);
-    if (u.origin !== location.origin || u.pathname !== '/wp-admin/post.php' ||
-      u.searchParams.get('post') !== id || u.searchParams.get('action') !== 'trash' ||
-      !u.searchParams.get('_wpnonce')) return null;
+  function safeTrashLink(link,row) {
+    if(!link)return null;
+    let u;
+    try{u=new URL(link.getAttribute('href'),location.href);}catch{return null;}
+    if(u.origin!==location.origin||u.pathname!=='/wp-admin/post.php'||
+      u.searchParams.get('post')!==row.id||
+      u.searchParams.get('action')!=='trash'||!u.searchParams.get('_wpnonce'))return null;
     return u.href;
   }
-  function searchForm(row) {
-    const field = document.querySelector('#post-search-input');
-    const submit = document.querySelector('#search-submit');
-    if (!field || !submit) return failFatal('Не найдены поле #post-search-input или кнопка Search products.',row);
-    const form = field.form || document.querySelector('#posts-filter');
-    if (!form) return failFatal('Не найдена форма списка товаров WordPress.',row);
-    field.focus();
-    field.value='';
-    field.dispatchEvent(new Event('input',{bubbles:true}));
-    field.dispatchEvent(new Event('change',{bubbles:true}));
-    field.value = row.id;
-    field.dispatchEvent(new Event('input',{bubbles:true}));
-    field.dispatchEvent(new Event('change',{bubbles:true}));
-    for (const name of ['post_status','product_cat','product_type','stock_status','paged']) {
-      const element = form.elements.namedItem(name);
-      if (!element || !('value' in element)) continue;
-      element.value = name === 'paged' ? '1' : '';
+  function openProduct(row) {
+    if(!isProductEditor(row)){
+      row.status='opening';row.message='Открываем ссылку товара.';
+      state.phase='open';
+      log('info','Переход к product_link: '+row.productLink,row);
+      return move(row.productLink,row);
     }
-    let postType = form.elements.namedItem('post_type');
-    if (!postType) {
-      postType = document.createElement('input');
-      postType.type='hidden'; postType.name='post_type';form.appendChild(postType);
+    const err=document.querySelector('.wp-die-message,#loginform');
+    if(err){
+      const message=clean(err.textContent).slice(0,200);
+      if(/log.?in|войти|авторизац/i.test(message))return failFatal('Требуется вход в WordPress: '+message,row);
+      return finalize(row,'not_found','По ссылке не открылся редактор: '+(message||'ошибка WordPress'));
     }
-    postType.value='product';
-    form.method='get';
-    form.action = LIST;
-    state.phase='results';state.searchPages=0;
-    row.status='searching'; row.message='Ищем через Search products: ' + row.id;
-    log('info','Ввели ID ' + row.id + ' в #post-search-input и нажали Search products.',row);
-    const fallback=listUrl(row.id);
-    submit.click();
-    setTimeout(() => {
-      if (!state.running || !ownLease() || state.phase !== 'results' ||
-        current()?.id !== row.id || moving) return;
-      const q = new URL(location.href).searchParams.get('s');
-      if (q !== row.id) move(fallback,row);
-      else schedule(50);
-    },1700);
+    const form=document.querySelector('form#post');
+    const actualId=clean(document.querySelector('#post_ID,input[name="post_ID"]')?.value);
+    const type=clean(document.querySelector('#post_type,input[name="post_type"]')?.value)||
+      (document.body.classList.contains('post-type-product')?'product':'');
+    const status=clean(document.querySelector('#post_status,input[name="post_status"]')?.value);
+    if(!form||!actualId)return finalize(row,'not_found','Карточка не найдена: нет формы редактирования товара или post_ID.');
+    if(actualId!==row.id)return finalize(row,'failed','WordPress открыл другой ID: '+actualId+' (ожидался '+row.id+').');
+    if(type!=='product')return finalize(row,'failed','ID '+row.id+' не является товаром (тип: '+(type||'неизвестно')+').');
+    row.wpPostId=actualId;
+    row.foundName=clean(document.querySelector('#title,input[name="post_title"]')?.value)||
+      clean(document.querySelector('.editor-post-title__input')?.textContent)||'';
+    if(status==='trash')return finalize(row,'done','Товар уже находится в корзине.');
+    const anchor=document.querySelector('#delete-action a.submitdelete.deletion')||
+      document.querySelector('#delete-action a.submitdelete');
+    const link=safeTrashLink(anchor,row);
+    if(!link)return finalize(row,'failed','Товар найден, но кнопка #delete-action → Move to Trash с проверяемым nonce отсутствует.');
+    // A persisted verify checkpoint ensures a reload never clicks Move to Trash a second time.
+    state.phase='verify';state.pending={id:row.id,href:link,at:now()};
+    row.status='deleting';row.message='Нажимаем Move to Trash, затем проверяем.';
+    log('info','Товар '+(row.foundName||'без названия')+' (ID '+row.id+'). Клик по Move to Trash.',row);
+    anchor.click();
+    // WordPress normally navigates. If an interceptor blocks navigation, verify without re-clicking.
+    setTimeout(()=>{
+      if(state.running&&ownLease()&&current()?.id===row.id&&state.phase==='verify'&&!busy&&!moving)
+        verifyTrash(row);
+    },4000);
   }
-  function processResults(row) {
-    const u = new URL(location.href);
-    if (u.searchParams.get('s') !== row.id) {
-      if (++state.checkAttempts > 2) return failFatal('Не удалось открыть выдачу поиска по ID ' + row.id,row);
-      persist();
-      return move(listUrl(row.id),row);
-    }
-    state.checkAttempts=0;
-    const list = document.querySelector('#the-list');
-    if (!list) return failFatal('WordPress не показал таблицу #the-list.',row);
-    state.searchPages++;
-    const found=findRow(document,row.id);
-    if (found) {
-      row.foundName=getTitle(found);
-      row.wpPostId=found.id.slice(5);
-      const link=trashLink(found,row.id);
-      if (!link) return finalize(row,'failed','Найден ID ' + row.id + ', но безопасная ссылка Trash недоступна.');
-      if (row.name && normalized(row.name) !== normalized(row.foundName)) {
-        log('warn','Название в Excel отличается: «' + row.name + '», на сайте «' + row.foundName + '». Удаление выполняется строго по ID.',row);
-      }
-      // The pending record is saved before the request so a reload cannot duplicate Trash.
-      state.phase='verifying';
-      state.pending={id:row.id,href:link,created:now()};
-      row.status='deleting';row.message='Запрос Trash отправляется...';
-      log('info','Найден точный post-' + row.id + ' («' + row.foundName + '»). Trash.',row);
-      return submitTrash(row,link);
-    }
-    const next=document.querySelector('.tablenav-pages a.next-page:not(.disabled)');
-    if (next?.getAttribute('href')) {
-      if (state.searchPages >= MAX_SEARCH_PAGES) {
-        return finalize(row,'failed','Поиск по ID ' + row.id + ': достигнут предел ' + MAX_SEARCH_PAGES + ' страниц.');
-      }
-      const href=new URL(next.getAttribute('href'),location.href);
-      if (href.origin !== location.origin || !href.pathname.endsWith('/edit.php') ||
-        href.searchParams.get('s') !== row.id) {
-        return finalize(row,'failed','WordPress вернул некорректную ссылку на следующую страницу.');
-      }
-      persist();
-      return move(href.href,row);
-    }
-    return finalize(row,'not_found','Товар с точным WordPress ID ' + row.id + ' не найден через Search products.');
+  function successRedirect(row) {
+    const u=new URL(location.href);
+    if(u.origin!==location.origin||!u.pathname.endsWith('/wp-admin/edit.php')||
+      u.searchParams.get('trashed')!=='1')return false;
+    return (u.searchParams.get('ids')||'').split(/[,\s]+/).includes(row.id);
   }
-  async function checkedFetch(url) {
+  async function fetchAdmin(url) {
     const response=await fetch(url,{credentials:'same-origin',redirect:'follow',cache:'no-store'});
-    if (!response.ok) throw new Error('HTTP ' + response.status);
-    const target = new URL(response.url);
-    if (target.origin !== location.origin || target.pathname.endsWith('/wp-login.php')) {
-      throw new Error('WordPress перенаправил запрос на вход или другой сайт.');
-    }
+    if(!response.ok && response.status!==403)throw new Error('HTTP '+response.status);
+    const destination=new URL(response.url);
+    if(destination.origin!==location.origin||destination.pathname.endsWith('/wp-login.php'))
+      throw new Error('Истекла сессия WordPress.');
     const doc=new DOMParser().parseFromString(await response.text(),'text/html');
-    if (doc.querySelector('#loginform,.wp-die-message')) throw new Error('WordPress вернул страницу входа или ошибку.');
+    if(doc.querySelector('#loginform'))throw new Error('Требуется войти в WordPress.');
     return doc;
   }
-  async function submitTrash(row,link) {
-    if (busy) return;
-    busy=true;
-    try {
-      // Exactly the same nonce-protected GET as the WordPress "Trash" action.
-      await checkedFetch(link);
-      log('info','WordPress принял запрос Trash для ID ' + row.id + '. Проверяем корзину.',row);
-    } catch (e) {
-      log('error','Ответ Trash не подтверждён: ' + e.message + '. Повторно не отправляем.',row);
-    } finally {
-      busy=false;
-      row.status='verifying';
-      persist();
-      await verifyTrash(row);
-    }
-  }
   async function verifyTrash(row) {
-    if (busy) return;
-    busy=true;
+    if(busy)return;
+    busy=true;row.status='verifying';row.message='Проверка без повторного нажатия Trash.';
+    persist();
     try {
-      for (let attempt=1;attempt<=3;attempt++) {
-        let nextUrl = listUrl(row.id,'trash');
-        for (let p=0;p<MAX_SEARCH_PAGES;p++) {
-          const doc=await checkedFetch(nextUrl);
-          if (!doc.querySelector('#the-list')) throw new Error('Таблица корзины WordPress не найдена.');
-          if (findRow(doc,row.id)) {
-            finalize(row,'done','ID ' + row.id + ' подтверждён в корзине WordPress.');
-            return;
-          }
-          const next=doc.querySelector('.tablenav-pages a.next-page:not(.disabled)');
-          if (!next?.getAttribute('href')) break;
-          if (p===MAX_SEARCH_PAGES-1) throw new Error('Лимит страниц корзины: '+MAX_SEARCH_PAGES);
-          const u=new URL(next.getAttribute('href'),nextUrl);
-          if (u.origin !== location.origin || !u.pathname.endsWith('/edit.php') ||
-            u.searchParams.get('post_type')!=='product' ||
-            u.searchParams.get('post_status')!=='trash' ||
-            u.searchParams.get('s')!==row.id) throw new Error('Неверная ссылка следующей страницы корзины.');
-          nextUrl=u.href;
-        }
-        if (attempt < 3) await delay(750);
+      if(successRedirect(row)){
+        finalize(row,'done','WordPress подтвердил Trash через redirect (trashed=1, ids='+row.id+').');
+        return;
       }
-      finalize(row,'failed','После Trash товар ID ' + row.id +
-        ' не подтверждён в корзине. Автоматическое повторное удаление запрещено.');
-    } catch (e) {
-      finalize(row,'failed','Не удалось проверить корзину для ID ' + row.id + ': ' + e.message +
-        '. Повторный Trash запрещён.');
-      if (/вход|WordPress вернул/i.test(e.message)) {
+      // Direct edit-page check does not use product search.
+      try{
+        const doc=await fetchAdmin(row.productLink);
+        const die=clean(doc.querySelector('.wp-die-message')?.textContent);
+        if(die&&/trash|корзин/i.test(die)){
+          finalize(row,'done','WordPress сообщает, что товар в корзине.');
+          return;
+        }
+        const editId=clean(doc.querySelector('#post_ID,input[name="post_ID"]')?.value);
+        const status=clean(doc.querySelector('#post_status,input[name="post_status"]')?.value);
+        if(editId===row.id&&status==='trash'){
+          finalize(row,'done','Проверен статус товара: trash.');
+          return;
+        }
+      }catch(e){
+        log('warn','Проверка карточки: '+e.message,row);
+        if(/сессия|войти/i.test(e.message))throw e;
+      }
+      // Fallback enumerates the Trash table; never invokes the WordPress search field.
+      for(let p=1;p<=MAX_VERIFY_PAGES;p++){
+        const u=new URL('/wp-admin/edit.php',location.origin);
+        u.searchParams.set('post_type','product');
+        u.searchParams.set('post_status','trash');
+        u.searchParams.set('paged',String(p));
+        const doc=await fetchAdmin(u.href);
+        if(!doc.querySelector('#the-list'))throw new Error('Нет таблицы товаров в корзине.');
+        if(doc.getElementById('post-'+row.id)){
+          finalize(row,'done','Товар '+row.id+' найден в корзине, страница '+p+'.');
+          return;
+        }
+        if(!doc.querySelector('.tablenav-pages a.next-page:not(.disabled)'))break;
+        if(p===MAX_VERIFY_PAGES)throw new Error('Лимит просмотра корзины: '+MAX_VERIFY_PAGES+' страниц.');
+      }
+      finalize(row,'failed','После Move to Trash товар не подтверждён в корзине. Автоматический повтор запрещён.');
+    }catch(e){
+      finalize(row,'failed','Не удалось проверить удаление: '+e.message+'. Повторный Trash не выполняется.');
+      if(/сессия|войти/i.test(e.message)){
         state.running=false;state.paused=true;persist();release();
       }
-    } finally {
+    }finally{
       busy=false;
-      if (state.running) schedule(Math.max(600,Number(state.settings.delay)*1000));
+      if(state.running)schedule(Math.max(700,Number(state.settings.delay)*1000));
     }
   }
   function runStep() {
-    if (!state.running || busy || moving) return;
-    if (!ownLease()) { state.running=false;state.paused=true;persist();toast('Очередь остановлена: управление перешло другой вкладке.');return; }
-    if (state.index < 0 || !current()) {
+    if(!state.running||busy||moving)return;
+    if(!ownLease()){
+      state.running=false;state.paused=true;persist();toast('Очередь остановлена: управление у другой вкладки.');
+      return;
+    }
+    if(state.index<0||!current()){
       state.index=nextPending();
-      if (state.index<0) {state.running=false;state.phase='idle';log('ok','Нет ожидающих товаров.');release();return;}
-      state.phase='search';state.searchPages=0;state.checkAttempts=0;
-      persist();
+      if(state.index<0){state.running=false;state.phase='idle';log('ok','Очередь закончена.');release();return;}
+      state.phase='open';persist();
     }
     const row=current();
-    if (!row || TERMINAL.has(row.status)) {state.index=-1;state.phase='idle';persist();return schedule();}
-    if (state.phase==='verifying' || state.phase==='deleting') {
-      // The action might have been sent before navigation/reload. Verify; never send it again.
-      row.status='verifying';
-      log('warn','Восстановление после перезагрузки: проверяем Trash, не нажимая повторно.',row);
+    if(!row||TERMINAL.has(row.status)){
+      state.index=-1;state.phase='idle';persist();return schedule();
+    }
+    if(['verify','verifying','deleting'].includes(state.phase)){
+      log('warn','Возобновление: проверка предыдущего Trash. Второго нажатия не будет.',row);
       return verifyTrash(row);
     }
-    if (state.phase==='results') return processResults(row);
-    if (state.phase!=='search') state.phase='search';
-    if (!isList()) return move(LIST,row);
-    return searchForm(row);
+    state.phase='open';openProduct(row);
   }
   function start(one=false) {
-    if (busy || moving) return toast('Текущее действие ещё не завершено.');
+    if(busy||moving)return toast('Дождитесь завершения текущего действия.');
     readState();
-    if (!state.rows.length) return toast('Сначала импортируйте Excel с ID товаров.');
-    if (!claim()) return;
-    if (state.index>=0 && !TERMINAL.has(current()?.status)) {
-      // Resume interrupted search/verification, but do not resend Trash.
-      state.phase = state.phase || 'search';
-    } else {
-      state.index=nextPending();
-      state.phase='search';
-    }
-    if (state.index<0) {release();return toast('В очереди нет товаров. Загрузите новый файл.');}
-    if (state.phase==='search' && !state.rows.some(r=>['searching','deleting','verifying'].includes(r.status))) {
+    if(!state.rows.length)return toast('Сначала загрузите Excel со столбцом product_link.');
+    if(!claim())return;
+    const ongoing=state.index>=0&&!!current()&&!TERMINAL.has(current().status);
+    if(!ongoing){state.index=nextPending();state.phase='open';}
+    if(state.index<0){release();return toast('Все ссылки обработаны. Загрузите новый Excel.');}
+    const row=current();
+    if(row.status==='pending'&&state.phase==='open'){
       const count=state.rows.filter(r=>r.status==='pending').length;
-      const chosen=state.rows[state.index];
-      const question=one ?
-        'ТЕСТ: поместить в Trash ровно один товар?\nID: '+chosen.id+'\nНазвание: '+(chosen.name||'—') :
-        'Начать массовый перенос товаров в Trash на '+DOMAIN+'?\nОсталось ID: '+count+'\nДействие изменит товары на сайте.';
-      if (!confirm(question)) {release();return;}
+      if(!confirm(one?
+        'ТЕСТ: переместить ровно один товар в Trash?\n'+row.productLink+
+        '\n\nЭто реальное перемещение в корзину.' :
+        'Начать массовое перемещение товаров в Trash?\nСайт: '+DOMAIN+
+        '\nОсталось ссылок: '+count)){
+        release();return;
+      }
     }
     state.mode=one?'one':'batch';
-    state.runCount=0;
-    state.running=true;state.paused=false;state.owner=tabId;
-    if (!state.started) state.started=now();
-    log('info',(one?'Тест одного товара':'Массовая обработка') + ' запущен на ' + DOMAIN + '.');
+    state.runCount=0;state.running=true;state.paused=false;state.owner=tabId;
+    if(!state.started)state.started=now();
+    log('info',(one?'Тест одной ссылки':'Массовая обработка product_link')+' запущен.',row);
     schedule();
   }
+
   function reset() {
     if (!canEdit()) return;
     if (!confirm('Сбросить импорт, результаты и журнал для ' + DOMAIN +
