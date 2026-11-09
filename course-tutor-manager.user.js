@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Tutor LMS — Courses & Tutors Manager (Multi-site)
+// @name         Tutor LMS — Редактирует курсы, и преподавателей
 // @namespace    yourcourse.local.tools
 // @version      1.2.3
 // @description  Excel → Tutor LMS на 6 сайтах: курсы, преподаватели, фото, Bio, проверки, отдельные очереди по доменам.
