@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SteamBuy — Product Trash Manager
 // @namespace    https://steambuy.pro/
-// @version      2.0.0
+// @version      2.0.1
 // @description  Excel → поиск товара по ID в WordPress → Trash → следующий; очередь, журнал, отдельные списки ошибок, 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -24,7 +24,7 @@
 (() => {
   'use strict';
   // Version 2 uses a new queue key: old running 1.x jobs cannot trigger deletions after upgrade.
-  const VERSION = '2.0.0';
+  const VERSION = '2.0.1';
   const DOMAIN = location.hostname;
   const PREFIX = 'sb-product-trash-v2:' + DOMAIN;
   const KEY = PREFIX + ':state';
@@ -119,10 +119,15 @@
     if (fresh?.v === 2 && Array.isArray(fresh.rows)) state = fresh;
   }
   function canEdit() {
-    if (busy || state.running) { toast('Сначала приостановите обработку.'); return false; }
     const lease = GM_getValue(LEASE,null);
+    if (busy || (state.running && (state.owner===tabId || (lease && lease.until>Date.now())))) {
+      toast('Сначала приостановите обработку.'); return false;
+    }
     if (lease && lease.until > Date.now() && lease.id !== tabId) {
       toast('Очередь используется другой вкладкой.'); return false;
+    }
+    if (state.running && state.owner!==tabId) {
+      state.running=false;state.paused=true;persist();
     }
     return true;
   }
@@ -753,11 +758,15 @@
       'Загрузите Excel с ID товаров';
     $('#dot').classList.toggle('run',state.running);
     const hasPending=nextPending()>=0||!!(row&&!TERMINAL.has(row.status));
-    $('#start').textContent=state.paused?'▶ Продолжить':'▶ Начать';
-    $('#start').disabled=state.running||busy||!hasPending;
-    $('#one').disabled=state.running||busy||!hasPending;
-    $('#pause').disabled=!state.running;
-    $('#stop').disabled=!state.running;
+    const lease=GM_getValue(LEASE,null);
+    const lockedElsewhere=!!(lease && lease.until>Date.now() && lease.id!==tabId);
+    const activeHere=state.running && state.owner===tabId;
+    const recoverable=state.running && state.owner!==tabId && !lockedElsewhere;
+    $('#start').textContent=recoverable?'▶ Возобновить':state.paused?'▶ Продолжить':'▶ Начать';
+    $('#start').disabled=activeHere||lockedElsewhere||busy||!hasPending;
+    $('#one').disabled=activeHere||lockedElsewhere||busy||!hasPending;
+    $('#pause').disabled=!activeHere;
+    $('#stop').disabled=!activeHere;
     $('#report').disabled=!state.rows.length;
     $('#load').disabled=state.running||busy;
     $('#reset').disabled=state.running||busy;
