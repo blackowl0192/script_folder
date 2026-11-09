@@ -1,900 +1,786 @@
 // ==UserScript==
 // @name         SteamBuy — Product Trash Manager
 // @namespace    https://steambuy.pro/
-// @version      1.4.0
-// @description  Безопасное удаление товара по WordPress ID, тест одного товара, Excel-очередь, отчёт, автообновление из GitHub.
+// @version      2.0.0
+// @description  Excel → поиск товара по ID в WordPress → Trash → следующий; очередь, журнал, отдельные списки ошибок, 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
 // @downloadURL  https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
+// @match        https://keymplace.com/wp-admin/*
+// @match        https://playfun.pro/wp-admin/*
+// @match        https://prime2key.com/wp-admin/*
+// @match        https://digitplaystore.com/wp-admin/*
+// @match        https://googolsell.com/wp-admin/*
 // @match        https://steambuy.pro/wp-admin/*
+// @match        https://ggmarket.pro/wp-admin/*
 // @noframes
 // @require      https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @run-at       document-idle
 // ==/UserScript==
 
 (() => {
   'use strict';
-
-  // Ключ намеренно прежний: сохранённая очередь из v1.1 доступна после обновления.
-  const KEY = 'steamBuyExcelTrash_v1';
-  const UI_KEY = 'steamBuyExcelTrash_panel_v12';
-  const LIST_URL = 'https://steambuy.pro/wp-admin/edit.php?post_type=product&post_status=all&lang=ru';
-  const MAX_PAGES = 30;
-  const VERIFY_PAGES = 12;
-  const STEP_DELAY = 650;
-  const OK = 'Удалено (проверено)';
-  const WAIT = 'Ожидает';
-  let imported = null;
-  let state = GM_getValue(KEY, null);
-  // Очереди старых версий тоже переключаются на поиск по ID.
-  if (state && state.searchBy !== 'id') {
-    state.searchBy = 'id';
+  // Version 2 uses a new queue key: old running 1.x jobs cannot trigger deletions after upgrade.
+  const VERSION = '2.0.0';
+  const DOMAIN = location.hostname;
+  const PREFIX = 'sb-product-trash-v2:' + DOMAIN;
+  const KEY = PREFIX + ':state';
+  const LEASE = PREFIX + ':lease';
+  const LAYOUT = PREFIX + ':layout';
+  const TAB = PREFIX + ':tab-id';
+  const LIST = location.origin + '/wp-admin/edit.php?post_type=product';
+  const MAX_SEARCH_PAGES = 15;
+  const MAX_LOGS = 1500;
+  const PAGESIZE = 25;
+  const OK = 'done';
+  const TERMINAL = new Set(['done', 'not_found', 'failed', 'skipped']);
+  const $ = (s, p = root) => p.querySelector(s);
+  const $$ = (s, p = root) => Array.from(p.querySelectorAll(s));
+  const clean = x => String(x == null ? '' : x).trim();
+  const idValid = x => /^[1-9]\d*$/.test(clean(x));
+  const esc = x => clean(x).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const normalized = x => clean(x).normalize('NFKC').toLowerCase().replace(/\s+/g, ' ');
+  const now = () => new Date().toISOString();
+  const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const tabId = sessionStorage.getItem(TAB) || (Date.now().toString(36) + Math.random().toString(36).slice(2));
+  sessionStorage.setItem(TAB, tabId);
+  const defaults = () => ({
+    v: 2, filename: '', sheet: '', rows: [], logs: [], index: -1,
+    phase: 'idle', running: false, paused: false, mode: 'batch', runCount: 0,
+    owner: '', pending: null, searchPages: 0, checkAttempts: 0,
+    settings: { delay: 2, stopOnError: false }, updated: '', started: ''
+  });
+  let state = GM_getValue(KEY, null) || defaults();
+  if (state.v !== 2 || !Array.isArray(state.rows)) state = defaults();
+  state.settings = Object.assign({delay: 2, stopOnError: false}, state.settings || {});
+  let root, panel, book = null, fileName = '';
+  let activeTab = 'queue', filter = 'all', search = '', page = 0;
+  let busy = false, moving = false, timer = null, heartbeat = null, expanded = false, dragging = null;
+  const labels = {pending:'Ожидает', searching:'Поиск', deleting:'Удаляется', verifying:'Проверка',
+    done:'Удалён', not_found:'Не найден', failed:'Ошибка удаления', skipped:'Пропущен'};
+  const statuses = {done:'done', failed:'bad', not_found:'bad', skipped:'neutral',
+    searching:'work', deleting:'work', verifying:'work', pending:'neutral'};
+  function persist() {
+    state.updated = now();
     GM_setValue(KEY, state);
+    render();
   }
-  let scheduled = false;
-  let busy = false;
-
-  // WordPress может перенаправить пользователя после Trash на post.php,
-  // edit.php без post_type, либо на другую страницу в wp-admin. Сохраняем
-  // очередь в Tampermonkey и возвращаемся к списку товаров. В версии 1.2
-  // Trash выполняется фоновым запросом, поэтому такие переходы редки.
-  const params = new URLSearchParams(location.search);
-  const isProductPage = location.pathname.endsWith('/edit.php') && params.get('post_type') === 'product';
-  if (!isProductPage) {
-    if (state?.running) {
-      const timeKey = 'steamBuyExcelTrash_redirectTime';
-      const oldTime = Number(sessionStorage.getItem(timeKey)) || 0;
-      if (Date.now() - oldTime > 1500) {
-        sessionStorage.setItem(timeKey, String(Date.now()));
-        location.replace(LIST_URL);
-      }
+  function log(level, message, row) {
+    state.logs.push({time:now(),level, id:row ? row.id : '', row:row ? row.excelRow : '',message});
+    if (state.logs.length > MAX_LOGS) state.logs.splice(0,state.logs.length - MAX_LOGS);
+    persist();
+  }
+  function toast(message) {
+    if (!panel) return;
+    $('.notice')?.remove();
+    const box = document.createElement('div');
+    box.className = 'notice';
+    box.textContent = message;
+    const x = document.createElement('button');
+    x.textContent = '×';
+    x.title = 'Закрыть';
+    x.onclick = () => box.remove();
+    box.prepend(x);
+    panel.appendChild(box);
+    setTimeout(() => box.remove(), 14000);
+  }
+  function ownLease() {
+    const lease = GM_getValue(LEASE, null);
+    return lease && lease.id === tabId && lease.until > Date.now();
+  }
+  function claim() {
+    const lease = GM_getValue(LEASE, null);
+    if (lease && lease.until > Date.now() && lease.id !== tabId) {
+      toast('Удаление уже запущено в другой вкладке этого сайта. Сначала остановите его там.');
+      return false;
     }
-    return;
+    GM_setValue(LEASE, {id:tabId, until:Date.now() + 25000});
+    const good = ownLease();
+    if (good) startHeartbeat();
+    return good;
   }
-
-  // В поиск WordPress вводится исключительно ID из Excel. Название — только для проверки перед Trash.
-  function queryFor(item) {
-    return item.id;
+  function startHeartbeat() {
+    clearInterval(heartbeat);
+    heartbeat = setInterval(() => {
+      if (!state.running || !ownLease()) { clearInterval(heartbeat); return; }
+      GM_setValue(LEASE, {id:tabId,until:Date.now() + 25000});
+    },4000);
   }
-
-  const norm = value => String(value ?? '')
-    .normalize('NFKC')
-    .toLocaleLowerCase()
-    .replace(/[\u2122\u00ae\u00a9]/g, '')
-    .replace(/[\u2018\u2019`]/g, "'")
-    .replace(/[\u2010-\u2015\u2212]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  const clean = value => String(value ?? '').trim();
-  const $ = (selector, parent = document) => parent.querySelector(selector);
-  const $$ = (selector, parent = document) => Array.from(parent.querySelectorAll(selector));
-
-  function save() {
-    GM_setValue(KEY, state);
-    renderStatus();
+  function release() {
+    clearInterval(heartbeat);
+    if (ownLease()) GM_setValue(LEASE, null);
   }
-
-  function delayStep() {
-    if (scheduled || !state?.running) return;
-    scheduled = true;
-    setTimeout(() => {
-      scheduled = false;
-      runStep();
-    }, STEP_DELAY);
+  function readState() {
+    const fresh = GM_getValue(KEY, null);
+    if (fresh?.v === 2 && Array.isArray(fresh.rows)) state = fresh;
   }
-
-  function finish() {
-    state.running = false;
-    state.phase = 'idle';
-    state.finishedAt = new Date().toLocaleString('ru-RU');
-    save();
-    setMessage('Задача завершена. Результат доступен в отчёте XLSX.');
-  }
-
-  function advance() {
-    state.index += 1;
-    state.phase = 'lookup';
-    state.page = 0;
-    state.candidates = [];
-    state.previewNames = [];
-    state.resultCount = 0;
-    state.pendingPostId = '';
-    state.searchAttempts = 0;
-    save();
-    if (state.mode === 'single' || state.index >= state.items.length) finish();
-    else {
-      const next = state.items[state.index];
-      setMessage(`Следующая игра: ${next.name} (${next.id}). Запускаю новый поиск...`);
-      delayStep();
+  function canEdit() {
+    if (busy || state.running) { toast('Сначала приостановите обработку.'); return false; }
+    const lease = GM_getValue(LEASE,null);
+    if (lease && lease.until > Date.now() && lease.id !== tabId) {
+      toast('Очередь используется другой вкладкой.'); return false;
     }
-  }
-
-  function mark(status, note = '') {
-    const item = state.items[state.index];
-    if (!item) return finish();
-    item.status = status;
-    item.note = note;
-    advance();
-  }
-
-  function setMessage(message){
-    const el=$('#sbp-message');if(el) el.textContent=message;
-    if(state){
-      if(!Array.isArray(state.logs))state.logs=[];
-      if(state.logs.at(-1)?.message!==message){
-        state.logs.push({time:new Date().toLocaleTimeString('ru-RU'),message});
-        if(state.logs.length>35) state.logs.splice(0,state.logs.length-35);
-        GM_setValue(KEY,state);
-      }
-    }
-    const log=$('#sbp-log');
-    if(log)log.textContent=(state?.logs||[]).map(x=>`${x.time}  ${x.message}`).join('\n');
-  }
-
-  function buildSearchUrl(query, status = 'all') {
-    const url = new URL(LIST_URL);
-    url.searchParams.set('s', String(query).trim());
-    url.searchParams.set('post_status', status);
-    url.searchParams.set('paged', '1');
-    return url;
-  }
-
-  function searchFor(query, nextPhase) {
-    const field = $('#post-search-input');
-    const submit = $('#search-submit');
-    if (!field || !submit) {
-      state.running = false;
-      save();
-      setMessage('Не найдено поле поиска или кнопка Search products. Обработка остановлена.');
-      return;
-    }
-
-    const form = field.form || $('#posts-filter');
-    if (!form) {
-      state.running = false;
-      save();
-      setMessage('Не найдена форма списка товаров. Обработка остановлена.');
-      return;
-    }
-
-    const attempts = (state.searchAttempts || 0) + 1;
-    state.searchAttempts = attempts;
-    if (attempts > 3) {
-      return mark('Ошибка поиска', 'Не удалось выполнить новый поиск после 3 попыток.');
-    }
-
-    for (const name of ['product_cat', 'product_type', 'stock_status']) {
-      const control = form.elements.namedItem(name);
-      if (control && 'value' in control) control.value = '';
-    }
-    const paged = form.elements.namedItem('paged');
-    if (paged && 'value' in paged) paged.value = '1';
-    const ensureFormField = (name, value) => {
-      let element = form.elements.namedItem(name);
-      if (!element) {
-        element = document.createElement('input');
-        element.type = 'hidden';
-        element.name = name;
-        form.appendChild(element);
-      }
-      if ('value' in element) element.value = value;
-    };
-    ensureFormField('lang', 'ru');
-    ensureFormField('post_type', 'product');
-    ensureFormField('post_status', 'all');
-    form.action = LIST_URL;
-
-    // ВАЖНО: отдельно и полностью удаляем ПРЕДЫДУЩИЙ текст, затем
-    // отдельно вписываем НОВУЮ игру. Срабатывают события для WP/плагинов.
-    field.focus();
-    field.value = '';
-    field.dispatchEvent(new Event('input', { bubbles: true }));
-    field.dispatchEvent(new Event('change', { bubbles: true }));
-    field.value = String(query).trim();
-    field.dispatchEvent(new Event('input', { bubbles: true }));
-    field.dispatchEvent(new Event('change', { bubbles: true }));
-
-    state.phase = nextPhase;
-    state.page = 0;
-    save();
-    setMessage(`Поиск ${state.index + 1}/${state.items.length}: ${field.value}`);
-
-    // Нажимаем именно Search products. При AJAX-перехвате или сломанном
-    // submit подстраховываемся принудительным переходом по точному URL.
-    const queryUrl = buildSearchUrl(query).href;
-    const job = state;
-    const jobIndex = state.index;
-    submit.click();
-    setTimeout(() => {
-      if (state !== job || !state?.running || state.index !== jobIndex || state.phase !== nextPhase) return;
-      // Если скрипт ещё работает на этой же странице, submit не вызвал
-      // обычную загрузку. Переходим по URL с НОВЫМ s=..., без старого s.
-      location.assign(queryUrl);
-    }, 1700);
-  }
-
-  function currentSearchIs(query) {
-    const search = new URLSearchParams(location.search).get('s');
-    return search !== null && search.trim() === String(query).trim();
-  }
-
-  function rowsOnPage() {
-    return $$('#the-list > tr[id^="post-"]').filter(row => /^post-\d+$/.test(row.id));
-  }
-
-  function rowName(row) {
-    return clean(($('a.row-title', row) || $('.column-name strong a', row) || $('.column-name a', row))?.textContent);
-  }
-
-  function nextPageUrl() {
-    const link = $('a.next-page:not(.disabled)', $('.tablenav-pages') || document);
-    if (!link || !link.href) return null;
-    try {
-      const url = new URL(link.href, location.href);
-      if (url.origin !== location.origin || !url.pathname.endsWith('/edit.php')) return null;
-      return url.href;
-    } catch { return null; }
-  }
-
-  function goToNextPageIfNeeded() {
-    const link = nextPageUrl();
-    if (!link) return false;
-    if (state.page >= MAX_PAGES) return false;
-    save();
-    location.assign(link);
     return true;
   }
-
-  function validTrashLink(candidate) {
-    try {
-      const url = new URL(candidate.trashUrl);
-      return url.origin === location.origin &&
-        url.pathname === '/wp-admin/post.php' &&
-        url.searchParams.get('action') === 'trash' &&
-        url.searchParams.get('post') === candidate.postId &&
-        Boolean(url.searchParams.get('_wpnonce'));
-    } catch { return false; }
+  function listUrl(s = '', status = '') {
+    const u = new URL(LIST);
+    if (status) u.searchParams.set('post_status',status);
+    if (s) u.searchParams.set('s',s);
+    return u.href;
   }
-
-  async function lookupById(item) {
-    if (busy) return;
-    const job=state, jobIndex=state.index, id=clean(item.id);
-    if (!/^[1-9]\d*$/.test(id)) return mark('Некорректный ID','Нужен положительный числовой WordPress product ID, не SKU.');
-    busy=true;
-    try {
-      setMessage(`Проверка карточки товара по ID ${id}...`);
-      const url=new URL('/wp-admin/post.php',location.origin);
-      url.searchParams.set('post',id);
-      url.searchParams.set('action','edit');
-      const response=await fetch(url.href,{credentials:'same-origin',redirect:'follow',cache:'no-store'});
-      if(!response.ok) throw new Error(`HTTP ${response.status}`);
-      if(new URL(response.url).pathname.endsWith('/wp-login.php')) throw new Error('Сессия WordPress истекла.');
-      const doc=new DOMParser().parseFromString(await response.text(),'text/html');
-      if(doc.querySelector('#loginform,.wp-die-message')) throw new Error('Нет доступа к этому ID или WordPress вернул ошибку.');
-      const form=doc.querySelector('form#post');
-      const actualId=clean(doc.querySelector('#post_ID,input[name="post_ID"]')?.value);
-      const type=clean(doc.querySelector('#post_type,input[name="post_type"]')?.value);
-      const name=clean(doc.querySelector('#title,input[name="post_title"],textarea[name="post_title"]')?.value);
-      const status=clean(doc.querySelector('#post_status,input[name="post_status"],#original_post_status')?.value);
-      if(state!==job||state.index!==jobIndex||!state.running) return;
-      if(!form||actualId!==id) return mark('ID не подтверждён',`Карточка с WordPress ID ${id} не открылась или ID отличается.`);
-      if(type!=='product') return mark('Не товар',`Для ID ${id} обнаружен тип ${type||'неизвестен'}. Удаление запрещено.`);
-      if(status==='trash') return mark('Уже в корзине',`Товар ID ${id} уже в Trash.`);
-      if(!name) return mark('Название недоступно',`Карточка ID ${id} не предоставила название для безопасной проверки.`);
-      if(item.name && norm(name)!==norm(item.name)) return mark('Название не совпало',`По ID ${id} сайт возвращает «${name}», а в Excel «${item.name}».`);
-      const link=doc.querySelector('#delete-action a.submitdelete,#delete-action a');
-      const candidate={postId:id,title:name,trashUrl:link?.href||''};
-      if(!validTrashLink(candidate)) return mark('Нет ссылки Trash',`Карточка товара ${id} не содержит действительную ссылку удаления с nonce.`);
-      if(state.mode==='single'&&!confirm(`ПРОВЕРЬТЕ ТОВАР:\nWordPress ID: ${id}\nНазвание: ${name}\n\nПереместить ТОЛЬКО ЭТОТ ОДИН товар в корзину?`))
-        return mark('Отменено пользователем','Тест остановлен до удаления.');
-      if(!state.running) return;
-      item.foundName=name;
-      item.name=item.name||name;
-      item.wpPostId=id;
-      item.status='Отправлен в Trash, проверяем';
-      state.pendingPostId=id;
-      state.phase='deleting';
-      save();
-      busy=false;
-      return await trashAndVerify(candidate,item);
-    } catch(e) {
-      if(state===job&&state.index===jobIndex) mark('Ошибка проверки ID',String(e.message||e));
-    } finally {
-      busy=false;
-      if(state?.running&&state.phase==='lookup') delayStep();
-    }
+  function isList() {
+    const u = new URL(location.href);
+    return u.pathname.endsWith('/wp-admin/edit.php') && u.searchParams.get('post_type') === 'product';
   }
-
-  async function verifyTrashStatus(postId) {
-    const url=new URL('/wp-admin/post.php',location.origin);
-    url.searchParams.set('post',String(postId));
-    url.searchParams.set('action','edit');
-    const response=await fetch(url.href,{credentials:'same-origin',redirect:'follow',cache:'no-store'});
-    if(!response.ok) return null;
-    if(new URL(response.url).pathname.endsWith('/wp-login.php')) throw new Error('Сессия WordPress истекла.');
-    const doc=new DOMParser().parseFromString(await response.text(),'text/html');
-    const actualId=clean(doc.querySelector('#post_ID,input[name="post_ID"]')?.value);
-    if(actualId!==String(postId)) return null;
-    const status=clean(doc.querySelector('#post_status,input[name="post_status"],#original_post_status,input[name="original_post_status"]')?.value);
-    if(status==='trash') return true;
-    if(status) return false;
-    return null;
+  function move(url, row) {
+    if (moving) return;
+    const u = new URL(url, location.href);
+    if (u.origin !== location.origin || !u.pathname.startsWith('/wp-admin/')) {
+      throw new Error('Заблокирован переход на сторонний URL.');
+    }
+    moving = true;
+    persist();
+    if (row) log('info', 'Переход: ' + u.pathname + u.search, row);
+    if (u.href === location.href) location.reload();
+    else location.assign(u.href);
+    setTimeout(() => {
+      if (!moving || document.visibilityState === 'hidden') return;
+      moving = false;
+      state.running = false;
+      state.paused = true;
+      persist(); release();
+      toast('Переход не завершился. Обработка остановлена; проверьте страницу и нажмите «Продолжить».');
+    }, 18000);
   }
-
-  function handleSearchResults(item) {
-    if (!currentSearchIs(queryFor(item))) return searchFor(queryFor(item), 'result');
-    state.searchAttempts = 0; // Сброс после подтверждённой загрузки нового s=...
-    const rows = rowsOnPage();
-    state.page += 1;
-    state.resultCount += rows.length;
-
-    for (const row of rows) {
-      const title = rowName(row);
-      if (!title) continue;
-      if (state.previewNames.length < 5) state.previewNames.push(title);
-      if (norm(title) !== norm(item.name)) continue;
-      const postId = row.id.replace('post-', '');
-      if (postId !== clean(item.id)) continue; // Даже в старой фазе поиска нужен точный WordPress ID.
-      const trash = $('span.trash a.trash-product, span.trash a.submitdelete, span.trash a', row);
-      state.candidates.push({ postId, title, trashUrl: trash?.href || '' });
-    }
-    save();
-
-    if (state.candidates.length > 1) {
-      return mark('Несколько совпадений', 'Найдено несколько товаров с тем же названием; автоматическое удаление запрещено.');
-    }
-    if (state.page < MAX_PAGES && goToNextPageIfNeeded()) return;
-    if (state.page >= MAX_PAGES && nextPageUrl()) {
-      return mark('Проверить вручную', `Результатов больше ${MAX_PAGES} страниц. Удаление не выполнялось.`);
-    }
-
-    if (state.candidates.length === 0) {
-      const note = state.resultCount
-        ? `По ID ${item.id} найдено ${state.resultCount} строк, но ни у одной нет точного совпадения названия с Excel. Примеры: ${state.previewNames.join(' | ')}`
-        : `По ID ${item.id} товары не найдены.`;
-      return mark(state.resultCount ? 'Название не совпало' : 'Не найдено', note);
-    }
-
-    const candidate = state.candidates[0];
-    if (candidate.postId !== clean(item.id)) {
-      return mark('ID не совпал', 'Сохранённый результат старого поиска имеет другой WordPress ID. Удаление заблокировано.');
-    }
-    if (!validTrashLink(candidate)) {
-      return mark('Нет ссылки Trash', 'Название совпало, но безопасная ссылка на перемещение в корзину не найдена.');
-    }
-
-    // ТОЛЬКО точное совпадение. Не переходим на post.php: при обычном
-    // переходе WordPress мог прерывать выполнение скрипта после 1-й игры.
-    // Выполняем Trash с теми же cookies в фоне и остаёмся на странице поиска.
-    item.foundName = candidate.title;
-    item.wpPostId = candidate.postId;
-    item.status = 'Отправлен в Trash, проверяем';
-    state.pendingPostId = candidate.postId;
-    state.phase = 'deleting';
-    save();
-    trashAndVerify(candidate, item);
+  function current() { return state.rows[state.index] || null; }
+  function nextPending() { return state.rows.findIndex(r => r.status === 'pending'); }
+  function schedule(ms = 80) {
+    clearTimeout(timer);
+    if (state.running && !busy && !moving) timer = setTimeout(runStep,ms);
   }
-
-  async function verifyAbsent(query, postId) {
-    let nextUrl = buildSearchUrl(query).href;
-    for (let page = 0; page < VERIFY_PAGES; page++) {
-      const response = await fetch(nextUrl, {
-        credentials: 'same-origin', redirect: 'follow', cache: 'no-store'
-      });
-      if (!response.ok) throw new Error(`Проверка списка: HTTP ${response.status}`);
-      if (new URL(response.url).pathname.endsWith('/wp-login.php')) {
-        throw new Error('Сессия WordPress завершилась.');
-      }
-      const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
-      if (!doc.querySelector('#the-list')) {
-        throw new Error('WordPress не вернул таблицу товаров при проверке.');
-      }
-      if (doc.getElementById(`post-${postId}`)) return false;
-      const next = doc.querySelector('.tablenav-pages a.next-page:not(.disabled)');
-      if (!next?.getAttribute('href')) return true;
-      const url = new URL(next.getAttribute('href'), nextUrl);
-      if (url.origin !== location.origin || !url.pathname.endsWith('/edit.php')) {
-        throw new Error('Некорректная ссылка следующей страницы проверки.');
-      }
-      nextUrl = url.href;
-    }
-    return null; // Слишком много страниц, безопаснее проверить вручную.
+  function pause(reason = 'Пауза по запросу пользователя') {
+    clearTimeout(timer);
+    state.running = false;
+    state.paused = true;
+    log('info', reason, current());
+    release();
   }
-
-  async function trashAndVerify(candidate, item) {
-    const job = state;
-    const jobIndex = state.index;
-    busy = true;
-    try {
-      setMessage(`Trash: ${item.name} (WP ${candidate.postId}). Проверяю результат...`);
-      const response = await fetch(candidate.trashUrl, {
-        method: 'GET', credentials: 'same-origin', redirect: 'follow', cache: 'no-store'
-      });
-      if (!response.ok) throw new Error(`Trash: HTTP ${response.status}`);
-      const url = new URL(response.url);
-      if (url.origin !== location.origin || url.pathname.endsWith('/wp-login.php')) {
-        throw new Error('Не удалось подтвердить авторизацию в WordPress.');
-      }
-      // Прочитать тело, чтобы запрос WordPress полностью завершился.
-      const html = await response.text();
-      if (/id=["']loginform["']/i.test(html) || /class=["']wp-die-message["']/i.test(html)) {
-        throw new Error('WordPress вернул страницу входа/ошибки.');
-      }
-      if (state !== job || state.index !== jobIndex) return;
-
-      const trashed = await verifyTrashStatus(candidate.postId);
-      if (state !== job || state.index !== jobIndex) return;
-      if (trashed === true) mark(OK, 'Карточка WordPress подтвердила статус trash.');
-      else if (trashed === false) mark('Удаление не подтверждено', 'После запроса статус товара не стал trash.');
-      else mark('Проверить вручную', 'Не удалось подтвердить статус trash по карточке товара. Повторное удаление не выполнялось.');
-    } catch (error) {
-      if (state === job && state.index === jobIndex) {
-        mark('Проверить вручную', `Не удалось однозначно подтвердить Trash: ${error.message}. Повторно не удалялся.`);
-      }
-    } finally {
-      busy = false;
-      // Сразу берём СЛЕДУЮЩУЮ игру. Поле будет очищено в searchFor().
-      if (state?.running && state.phase === 'search') delayStep();
-    }
-  }
-
-  async function verifyInterrupted(item) {
-    // После обновления старого скрипта или случайного закрытия вкладки:
-    // не нажимаем Trash повторно — сначала проверяем уже сделанное действие.
-    if (busy) return;
-    const job = state;
-    const jobIndex = state.index;
-    busy = true;
-    try {
-      const result = await verifyTrashStatus(state.pendingPostId);
-      if (state !== job || state.index !== jobIndex) return;
-      if (result === true) mark(OK, 'Статус trash проверен после возобновления.');
-      else if (result === false) mark('Удаление не подтверждено', 'После перезагрузки статус товара не trash.');
-      else mark('Проверить вручную', 'Проверка прерванного удаления не завершена.');
-    } catch (e) {
-      if (state === job && state.index === jobIndex) {
-        mark('Проверить вручную', `После перезагрузки не удалось проверить удаление: ${e.message}`);
-      }
-    } finally {
-      busy = false;
-      if (state?.running && state.phase === 'search') delayStep();
-    }
-  }
-
-  function runStep() {
-    if (!state?.running || busy) return;
-    const item = state.items[state.index];
-    if (!item) return finish();
-    if (item.status === 'Пропущено' || item.status === 'Дубликат в Excel' || item.status === 'Конфликт ID в Excel') {
-      return advance();
-    }
-    switch (state.phase) {
-      case 'search': // Совместимость с очередью v1.3.1.
-      case 'lookup': return lookupById(item);
-      case 'result': return handleSearchResults(item);
-      case 'deleting': // Не повторять Trash после перезагрузки страницы.
-      case 'verify-search': // Обработка незавершённого задания старой версии.
-      case 'verify-result': return verifyInterrupted(item);
-      default:
-        state.running = false;
-        save();
-        setMessage('Неизвестный этап обработки; выполнение приостановлено.');
-    }
-  }
-
-  // Панель управления в wp-admin.
-  const panel = document.createElement('aside');
-  panel.id = 'sbp-panel';
-  panel.innerHTML = `
-    <style>
-      #sbp-panel {position:fixed;z-index:999999;right:16px;top:65px;width:438px;height:680px;min-width:330px;min-height:52px;max-width:calc(100vw - 12px);max-height:calc(100vh - 12px);resize:both;overflow:auto;background:#f8fafc;color:#152235;border:1px solid #ced8e5;border-radius:15px;box-shadow:0 18px 54px rgba(22,36,58,.27);font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
-      #sbp-panel * {box-sizing:border-box}
-      #sbp-panel #sbp-handle {position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;background:linear-gradient(120deg,#12243d,#22476f);color:#fff;cursor:move;user-select:none;touch-action:none}
-      #sbp-panel #sbp-handle b {font-size:15px;letter-spacing:.2px}
-      #sbp-panel #sbp-handle small {font-size:11px;opacity:.72;font-weight:500}
-      #sbp-panel #sbp-handle button {min-width:31px;padding:5px;background:#ffffff18;color:#fff;border-color:#ffffff55}
-      #sbp-panel #sbp-body {padding:13px 14px 18px}
-      #sbp-panel.sbp-collapsed {height:50px!important;min-height:50px;resize:none;overflow:hidden}
-      #sbp-panel.sbp-collapsed #sbp-body {display:none}
-      #sbp-panel.sbp-dragging {opacity:.93}
-      #sbp-panel .sbp-card {background:#fff;border:1px solid #dce5f0;border-radius:11px;margin:0 0 11px;padding:12px;box-shadow:0 2px 6px #15223508}
-      #sbp-panel .sbp-card h3 {margin:0 0 7px;font-size:13px;font-weight:750;color:#142d48}
-      #sbp-panel .sbp-card p {margin:5px 0 8px}
-      #sbp-panel .sbp-subtle {color:#697889;font-size:11.5px}
-      #sbp-panel label {display:block;font-weight:600;margin:9px 0 4px;color:#344760}
-      #sbp-panel input[type=file],#sbp-panel input[type=number],#sbp-panel input[type=text],#sbp-panel select {display:block;width:100%;max-width:none;min-height:35px;padding:6px 9px;border:1px solid #cad7e6;border-radius:7px;background:#fff;color:#16283e;box-shadow:none}
-      #sbp-panel input:focus-visible,#sbp-panel select:focus-visible,#sbp-panel button:focus-visible {outline:2px solid #2684c7;outline-offset:2px}
-      #sbp-panel .sbp-cols {display:grid;grid-template-columns:1fr 1fr;gap:9px}
-      #sbp-panel button {border:1px solid #b7cce0;background:#fff;color:#255379;cursor:pointer;padding:8px 10px;border-radius:7px;font-weight:650;transition:background .12s,border-color .12s}
-      #sbp-panel button:hover:not(:disabled) {background:#eaf3fd;border-color:#588bb6}
-      #sbp-panel button.primary {background:#176db1;color:#fff;border-color:#176db1}
-      #sbp-panel button.primary:hover:not(:disabled) {background:#10568e}
-      #sbp-panel button.danger {color:#bd3339;border-color:#e5b7bd}
-      #sbp-panel button.danger:hover:not(:disabled) {background:#fff1f1}
-      #sbp-panel button:disabled {opacity:.48;cursor:not-allowed}
-      #sbp-panel .sbp-actions {display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}
-      #sbp-panel .sbp-actions button {flex:1 1 auto}
-      #sbp-panel #sbp-preview {white-space:pre-wrap;overflow-wrap:anywhere;max-height:110px;overflow:auto;background:#f3f7fc;border:1px solid #e0e7f0;border-radius:7px;padding:9px;font:12px/1.6 Consolas,monospace}
-      #sbp-panel .sbp-gh {display:flex;justify-content:space-between;gap:6px;align-items:center;margin:0 0 10px;padding:0 2px}
-      #sbp-panel .sbp-gh a {font-weight:600;color:#176db1;text-decoration:none}
-      #sbp-panel .sbp-gh a:hover {text-decoration:underline}
-      #sbp-panel .sbp-badge {display:inline-block;background:#d8f2e6;color:#176547;padding:3px 7px;border-radius:7px;font-size:11px;font-weight:750}
-      #sbp-panel #sbp-progress {height:8px;overflow:hidden;background:#e7eef8;border-radius:50px;margin:10px 0}
-      #sbp-panel #sbp-progress-fill {height:100%;width:0;background:linear-gradient(90deg,#1979b5,#22b6a0);transition:width .25s}
-      #sbp-panel #sbp-stats {font-weight:700;color:#1f3c5d}
-      #sbp-panel #sbp-status {white-space:pre-line;overflow-wrap:anywhere;border-top:1px solid #e2e9f2;padding-top:8px;color:#445a72;font-size:12px}
-      #sbp-panel #sbp-message {margin-top:8px;color:#134b74;font-weight:650;overflow-wrap:anywhere}
-      #sbp-panel #sbp-log {white-space:pre-wrap;overflow-wrap:anywhere;max-height:115px;overflow:auto;color:#627386;font:11px/1.55 Consolas,monospace}
-      #sbp-panel details summary {cursor:pointer;font-weight:650;color:#355878}
-      @media(max-width:600px){#sbp-panel {width:min(438px,calc(100vw - 12px));right:6px;top:50px}#sbp-panel .sbp-cols {grid-template-columns:1fr}}
-    </style>
-    <div id="sbp-handle" title="Перемещение панели мышью">
-      <div><b>SteamBuy · Product Trash</b><div><small>v1.4.0 · поиск по WordPress ID</small></div></div>
-      <span><button id="sbp-home" type="button" title="Сбросить расположение">↺</button> <button id="sbp-collapse" type="button" title="Свернуть/развернуть">−</button></span>
-    </div>
-    <div id="sbp-body">
-      <div class="sbp-gh"><span class="sbp-badge">GitHub · автообновления</span><a href="https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js" target="_blank" rel="noopener noreferrer">Исходный код</a></div>
-      <section class="sbp-card">
-        <h3>01 · Тест одного товара</h3>
-        <p class="sbp-subtle">Проверка по внутреннему ID WooCommerce, показ найденного названия и дополнительное подтверждение. Excel не требуется.</p>
-        <div class="sbp-cols"><div><label for="sbp-single-id">ID товара *</label><input id="sbp-single-id" type="text" inputmode="numeric" placeholder="Например, 142" autocomplete="off"></div><div><label for="sbp-single-name">Название (необязательно)</label><input id="sbp-single-name" type="text" placeholder="Сверить с сайтом" autocomplete="off"></div></div>
-        <div class="sbp-actions"><button id="sbp-test-manual" type="button" class="primary">Проверить и удалить 1 товар</button></div>
-      </section>
-      <section class="sbp-card">
-        <h3>02 · Массовая обработка Excel</h3>
-        <p class="sbp-subtle">ID из файла трактуется как WordPress post ID товара, не как SKU. При несовпадении ID, типа или названия удаление не происходит.</p>
-        <label for="sbp-file">Excel / CSV</label><input id="sbp-file" type="file" accept=".xlsx,.xls,.csv">
-        <label for="sbp-sheet">Лист</label><select id="sbp-sheet"></select>
-        <div class="sbp-cols"><div><label for="sbp-id-col">Колонка ID</label><select id="sbp-id-col"></select></div><div><label for="sbp-name-col">Название игры</label><select id="sbp-name-col"></select></div></div>
-        <label for="sbp-start-row">Начальная строка (учитывая заголовок)</label><input id="sbp-start-row" type="number" min="1" value="2">
-        <label>Первые строки</label><div id="sbp-preview">Выберите файл.</div>
-        <div class="sbp-actions"><button id="sbp-test-first" type="button" disabled>Тест: 1 из Excel</button><button id="sbp-start" type="button" class="primary" disabled>Обработать весь Excel</button></div>
-      </section>
-      <section class="sbp-card">
-        <h3>03 · Управление и отчёт</h3>
-        <div class="sbp-actions"><button id="sbp-toggle" type="button" disabled>Пауза</button><button id="sbp-export" type="button" disabled>Скачать отчёт XLSX</button><button id="sbp-reset" type="button" class="danger">Сбросить</button></div>
-        <div id="sbp-stats">Нет задачи</div><div id="sbp-progress"><div id="sbp-progress-fill"></div></div>
-        <div id="sbp-status">Загрузите Excel или проверьте один ID.</div>
-        <div id="sbp-message" role="status" aria-live="polite"></div>
-      </section>
-      <section class="sbp-card"><details><summary>Последние действия и безопасность</summary><p class="sbp-subtle">Отправка в корзину, не безвозвратное удаление. После сомнительного ответа повторный запрос Trash автоматически не отправляется. Прогресс хранится в Tampermonkey.</p><div id="sbp-log"></div></details></section>
-    </div>
-  `;
-  document.body.appendChild(panel);
-
-  // Перетаскивание мышью + изменяемый размер + сохранение позиции.
-  const drag = $('#sbp-handle');
-  const collapsedButton = $('#sbp-collapse');
-  let layout = GM_getValue(UI_KEY, {}) || {};
-  function persistLayout() {
-    if (panel.classList.contains('sbp-collapsed')) return;
-    const r = panel.getBoundingClientRect();
-    layout = { ...layout, left: r.left, top: r.top, width: r.width, height: r.height, collapsed: false };
-    GM_setValue(UI_KEY, layout);
-  }
-  function applyLayout() {
-    if (Number.isFinite(layout.width)) panel.style.width = `${layout.width}px`;
-    if (Number.isFinite(layout.height)) panel.style.height = `${layout.height}px`;
-    if (Number.isFinite(layout.left)) {
-      panel.style.left = `${Math.max(0, Math.min(layout.left, innerWidth - panel.getBoundingClientRect().width - 6))}px`;
-      panel.style.right = 'auto';
-    }
-    if (Number.isFinite(layout.top)) panel.style.top = `${Math.max(0, Math.min(layout.top, innerHeight - panel.getBoundingClientRect().height - 6))}px`;
-    if (layout.collapsed) {
-      panel.classList.add('sbp-collapsed');
-      collapsedButton.textContent = '+';
-    }
-  }
-  applyLayout();
-  let dragging = null;
-  drag.addEventListener('pointerdown', event => {
-    if (event.target.closest('button') || event.button !== 0) return;
-    const r = panel.getBoundingClientRect();
-    dragging = { x: event.clientX, y: event.clientY, left: r.left, top: r.top };
-    panel.style.left = `${r.left}px`;
-    panel.style.right = 'auto';
-    panel.classList.add('sbp-dragging');
-    drag.setPointerCapture(event.pointerId);
-    event.preventDefault();
-  });
-  drag.addEventListener('pointermove', event => {
-    if (!dragging) return;
-    const left = Math.max(0, Math.min(innerWidth - panel.getBoundingClientRect().width - 6, dragging.left + event.clientX - dragging.x));
-    const top = Math.max(0, Math.min(innerHeight - panel.getBoundingClientRect().height - 6, dragging.top + event.clientY - dragging.y));
-    panel.style.left = `${left}px`;
-    panel.style.top = `${top}px`;
-  });
-  function endDrag() {
-    if (!dragging) return;
-    dragging = null;
-    panel.classList.remove('sbp-dragging');
-    const r = panel.getBoundingClientRect();
-    layout = { ...layout, left: r.left, top: r.top };
-    GM_setValue(UI_KEY, layout);
-  }
-  drag.addEventListener('pointerup', endDrag);
-  drag.addEventListener('pointercancel', endDrag);
-  collapsedButton.addEventListener('click', () => {
-    const nowCollapsed = !panel.classList.contains('sbp-collapsed');
-    if (nowCollapsed) persistLayout();
-    panel.classList.toggle('sbp-collapsed', nowCollapsed);
-    collapsedButton.textContent = nowCollapsed ? '+' : '−';
-    layout.collapsed = nowCollapsed;
-    if (!nowCollapsed && Number.isFinite(layout.height)) panel.style.height = `${layout.height}px`;
-    GM_setValue(UI_KEY, layout);
-  });
-  $('#sbp-home').addEventListener('click', () => {
-    layout = { ...layout, left: Math.max(0, innerWidth - Math.min(438, innerWidth - 12) - 16), top: 65, width: 438, height: 680, collapsed: false };
-    applyLayout();
-    GM_setValue(UI_KEY, layout);
-  });
-  if (typeof ResizeObserver !== 'undefined') {
-    let resizeTimer = null;
-    new ResizeObserver(() => {
-      if (panel.classList.contains('sbp-collapsed')) return;
-      clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(persistLayout, 500);
-    }).observe(panel);
-  }
-
-  const fileInput = $('#sbp-file');
-  const sheetSelect = $('#sbp-sheet');
-  const nameSelect = $('#sbp-name-col');
-  const idSelect = $('#sbp-id-col');
-  const startRowInput = $('#sbp-start-row');
-  const preview = $('#sbp-preview');
-
-  function selectedRows() {
-    return imported?.sheets?.[sheetSelect.value] || [];
-  }
-
-  function colLabel(index) {
-    let n = index + 1;
-    let s = '';
-    while (n > 0) { n -= 1; s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26); }
-    return s;
-  }
-
-  function refreshColumns() {
-    const rows = selectedRows();
-    const width = Math.max(2, Math.min(70, ...rows.slice(0, 100).map(row => row.length)));
-    const top = rows[0] || [];
-    nameSelect.replaceChildren();
-    idSelect.replaceChildren();
-    for (let i = 0; i < width; i++) {
-      const label = `${colLabel(i)} · ${clean(top[i]).slice(0, 28) || '—'}`;
-      for (const parent of [nameSelect, idSelect]) {
-        const opt = document.createElement('option');
-        opt.value = String(i);
-        opt.textContent = label;
-        parent.appendChild(opt);
-      }
-    }
-    const header = top.map(cell => norm(cell));
-    const maybeName = header.findIndex(x => /^(названи[ея]|игра|game|product name|title|name)$/.test(x));
-    const maybeId = header.findIndex(x => /^(id|id товара|product id|wp id|wordpress id)$/.test(x));
-    nameSelect.value = String(maybeName >= 0 ? maybeName : 0);
-    idSelect.value = String(maybeId >= 0 ? maybeId : 1);
-    startRowInput.value = (maybeName >= 0 || maybeId >= 0) ? '2' : '1';
-    updatePreview();
-  }
-
-  function updatePreview() {
-    const rows = selectedRows();
-    if (!imported) return;
-    const start = Math.max(1, Number(startRowInput.value) || 1);
-    const nameCol = Number(nameSelect.value);
-    const idCol = Number(idSelect.value);
-    const sample = rows.slice(start - 1).filter(row => clean(row[nameCol]) || clean(row[idCol])).slice(0, 4);
-    preview.textContent = sample.length
-      ? sample.map(row => `${clean(row[nameCol])}  →  ${clean(row[idCol])}`).join('\n')
-      : 'Нет заполненных строк. Проверьте номера колонок.';
-    $('#sbp-start').disabled = !sample.length || Boolean(state?.running);
-    $('#sbp-test-first').disabled = !sample.length || Boolean(state?.running);
-  }
-
-  fileInput.addEventListener('change', async () => {
-    if (state?.running) return setMessage('Сначала остановите текущую обработку.');
-    const file = fileInput.files?.[0];
-    if (!file) return;
-    try {
-      const data = await file.arrayBuffer();
-      const wb = XLSX.read(data, { type: 'array' });
-      imported = { fileName: file.name, sheets: {} };
-      for (const name of wb.SheetNames) {
-        imported.sheets[name] = XLSX.utils.sheet_to_json(wb.Sheets[name], {
-          header: 1, raw: false, defval: '', blankrows: true
-        });
-      }
-      sheetSelect.replaceChildren();
-      for (const name of wb.SheetNames) {
-        const option = document.createElement('option');
-        option.value = name;
-        option.textContent = name;
-        sheetSelect.appendChild(option);
-      }
-      refreshColumns();
-      setMessage(`Загружен файл ${file.name}. Проверьте соответствие колонок.`);
-    } catch (error) {
-      imported = null;
-      $('#sbp-start').disabled = true;
-      setMessage(`Не удалось открыть Excel: ${error.message}`);
-    }
-  });
-  sheetSelect.addEventListener('change', refreshColumns);
-  [nameSelect, idSelect, startRowInput].forEach(el => el.addEventListener('change', updatePreview));
-
-  function startImportedQueue(single) {
-    if(!imported||busy||state?.running) return;
-    const rows=selectedRows(),startRow=Math.max(1,Math.floor(Number(startRowInput.value)||1));
-    const nameCol=Number(nameSelect.value),idCol=Number(idSelect.value);
-    if(nameCol===idCol) return setMessage('Колонки ID и названия должны различаться.');
-    const items=[];
-    rows.forEach((row,index)=>{
-      if(index<startRow-1) return;
-      const name=clean(row[nameCol]),id=clean(row[idCol]);
-      if(!name&&!id) return;
-      const invalid=!/^[1-9]\d*$/.test(id),missing=!name;
-      items.push({sourceRow:index+1,name,id,status:missing?'Пропущено':invalid?'Некорректный ID':WAIT,
-        note:missing?'Не указано название.':invalid?'ID должен быть числовым WordPress post ID.':'',foundName:'',wpPostId:''});
-    });
-    if(!items.length) return setMessage('Не найдено строк с товарами.');
-    const byId=new Map();
-    for(const item of items){
-      if(item.status!==WAIT) continue;
-      if(!byId.has(item.id)) byId.set(item.id,[]);
-      byId.get(item.id).push(item);
-    }
-    for(const group of byId.values()){
-      const names=new Set(group.map(x=>norm(x.name)));
-      if(names.size>1) group.forEach(x=>{x.status='Конфликт ID в Excel';x.note='Один и тот же ID сопоставлен нескольким названиям.';});
-      else group.slice(1).forEach(x=>{x.status='Дубликат в Excel';x.note='Повтор ID и названия.';});
-    }
-    const ready=items.filter(x=>x.status===WAIT);
-    if(!ready.length) return setMessage('Нет корректных строк с числовым ID и названием.');
-    if(state?.items?.length&&state.index<state.items.length&&!confirm('Предыдущий прогресс будет заменён. Продолжить?')) return;
-    if(!confirm(single?
-      `ТЕСТ: только 1 товар из Excel.\nID: ${ready[0].id}\nНазвание: ${ready[0].name}\n\nПеред удалением будет дополнительная проверка и подтверждение. Продолжить?`:
-      `Файл: ${imported.fileName}\nВсего строк: ${items.length}\nК обработке: ${ready.length}\n\nТовары перемещаются в корзину по WordPress ID при точном совпадении названия. Начать?`)) return;
-    state={
-      fileName:imported.fileName,sheetName:sheetSelect.value,originalRows:rows,
-      startRow,nameCol,idCol,searchBy:'id',mode:single?'single':'batch',
-      items:single?[ready[0]]:items,index:0,running:true,phase:'lookup',
-      page:0,candidates:[],previewNames:[],resultCount:0,pendingPostId:'',searchAttempts:0,
-      startedAt:new Date().toLocaleString('ru-RU'),logs:[]
-    };
-    save();
-    setMessage(single?`Тест одного товара: ID ${ready[0].id}.`:`Обработка ${ready.length} товаров началась.`);
-    delayStep();
-  }
-
-  function startManualTest() {
-    if(busy||state?.running) return setMessage('Сначала приостановите действующую задачу.');
-    const id=clean($('#sbp-single-id')?.value);
-    const name=clean($('#sbp-single-name')?.value);
-    if(!/^[1-9]\d*$/.test(id)) return setMessage('Введите числовой WordPress ID товара (не SKU).');
-    if(state?.items?.length&&state.index<state.items.length&&!confirm('Предыдущий прогресс будет заменён. Продолжить?')) return;
-    const item={sourceRow:2,id,name,status:WAIT,note:'',foundName:'',wpPostId:''};
-    state={
-      fileName:`test_product_${id}.xlsx`,sheetName:'Один товар',
-      originalRows:[['ID','Название'],[id,name]],startRow:2,nameCol:1,idCol:0,
-      searchBy:'id',mode:'single',items:[item],index:0,running:true,phase:'lookup',
-      page:0,candidates:[],previewNames:[],resultCount:0,pendingPostId:'',
-      searchAttempts:0,startedAt:new Date().toLocaleString('ru-RU'),logs:[]
-    };
-    save();
-    setMessage(`Тестовая проверка товара ${id}. Сначала прочитаем карточку, затем запросим подтверждение.`);
-    delayStep();
-  }
-
-  $('#sbp-start').addEventListener('click', () => startImportedQueue(false));
-  $('#sbp-test-first').addEventListener('click', () => startImportedQueue(true));
-  $('#sbp-test-manual').addEventListener('click', startManualTest);
-
-  $('#sbp-toggle').addEventListener('click', () => {
-    if (!state?.items?.length) return;
-    state.running = !state.running;
-    save();
-    setMessage(state.running ? 'Продолжаем обработку.' : 'Пауза. Можно скачать текущий Excel-отчёт.');
-    if (state.running) delayStep();
-  });
-
-  $('#sbp-reset').addEventListener('click', () => {
-    if (busy) return setMessage('Сначала дождитесь ответа на текущий запрос Trash.');
-    if (!confirm('Удалить сохранённый прогресс обработки? Товары, ранее отправленные в Trash, не восстановятся.')) return;
-    state = null;
-    GM_setValue(KEY, null);
-    renderStatus();
-    updatePreview();
-    setMessage('Прогресс сброшен. Можно начать новый файл.');
-  });
-
-  $('#sbp-export').addEventListener('click', () => {
-    if (!state?.items?.length) return;
-    try {
-      const original = state.originalRows.map(row => [...row]);
-      const shift = state.startRow === 1 ? 1 : 0;
-      if (shift) original.unshift([]);
-      const maxCols = Math.max(2, ...original.map(row => row.length));
-      const headers = ['Статус обработки', 'Название на сайте', 'WP post ID', 'Комментарий'];
-      if (!original[0]) original[0] = [];
-      for (let j = 0; j < headers.length; j++) original[0][maxCols + j] = headers[j];
-
-      for (const item of state.items) {
-        const rowIndex = item.sourceRow - 1 + shift;
-        const row = original[rowIndex] || (original[rowIndex] = []);
-        row[maxCols] = item.status;
-        row[maxCols + 1] = item.foundName;
-        row[maxCols + 2] = item.wpPostId;
-        row[maxCols + 3] = item.note;
-      }
-      const wb = XLSX.utils.book_new();
-      const output = XLSX.utils.aoa_to_sheet(original);
-      output['!cols'] = [
-        ...Array.from({ length: maxCols }, (_, i) => ({ wch: i === state.nameCol ? 54 : i === state.idCol ? 20 : 20 })),
-        { wch: 28 }, { wch: 54 }, { wch: 17 }, { wch: 90 }
-      ];
-      output['!autofilter'] = { ref: `A1:${colLabel(maxCols + 3)}${Math.max(2, original.length)}` };
-      XLSX.utils.book_append_sheet(wb, output, 'Список и статусы');
-      const problems = state.items.filter(item => item.status !== OK).map(item => [
-        item.sourceRow, item.id, item.name, item.status, item.foundName, item.wpPostId, item.note
-      ]);
-      const missed = XLSX.utils.aoa_to_sheet([
-        ['Строка Excel', 'ID', 'Название игры', 'Статус', 'Найдено на сайте', 'WP post ID', 'Комментарий'],
-        ...problems
-      ]);
-      missed['!cols'] = [{ wch: 14 }, { wch: 20 }, { wch: 50 }, { wch: 27 }, { wch: 50 }, { wch: 16 }, { wch: 90 }];
-      XLSX.utils.book_append_sheet(wb, missed, 'Проблемные ID');
-      const base = state.fileName.replace(/\.(xlsx|xls|csv)$/i, '').replace(/[\\/:*?"<>|]/g, '_');
-      XLSX.writeFile(wb, `${base}_результат_Trash.xlsx`);
-      setMessage('Excel-отчёт сохранён.');
-    } catch (error) {
-      setMessage(`Ошибка сохранения Excel: ${error.message}`);
-    }
-  });
-
-  function renderStatus(){
-    const button=$('#sbp-toggle'),exportButton=$('#sbp-export'),startButton=$('#sbp-start');
-    const testFirst=$('#sbp-test-first'),testManual=$('#sbp-test-manual');
-    const status=$('#sbp-status');if(!status) return;
-    const hasData=Boolean(state?.items?.length);
-    button.disabled=!hasData||state.phase==='idle'||state.index>=state.items.length;
-    button.textContent=state?.running?'Пауза':'Продолжить';
-    exportButton.disabled=!hasData;
-    startButton.disabled=!imported||Boolean(state?.running)||busy;
-    testFirst.disabled=!imported||Boolean(state?.running)||busy;
-    testManual.disabled=Boolean(state?.running)||busy;
-    fileInput.disabled=Boolean(state?.running);
-    const fill=$('#sbp-progress-fill'),stats=$('#sbp-stats'),logs=$('#sbp-log');
-    if(!hasData){
-      status.textContent='Нет активной задачи.';
-      stats.textContent='Нет задачи';
-      fill.style.width='0%';
-      if(logs) logs.textContent='';
+  function stop() { pause('Остановлено пользователем. Сохранённые результаты не потеряны.'); }
+  function finalize(row, status, message) {
+    if (!row) return;
+    row.status = status;
+    row.message = message;
+    row.finished = now();
+    state.pending = null;
+    state.phase = 'idle';
+    state.index = -1;
+    state.runCount++;
+    log(status === 'done' ? 'ok' : 'error', message, row);
+    if (state.mode === 'one' && state.runCount >= 1) {
+      state.running = false;
+      state.paused = true;
+      log('info','Тест одного товара завершён. Остальная очередь не затронута.');
+      release();
       return;
     }
-    const counts={};
-    state.items.forEach(item=>{counts[item.status]=(counts[item.status]||0)+1;});
-    const processed=state.items.filter(item=>item.status!==WAIT&&item.status!=='Отправлен в Trash, проверяем').length;
-    fill.style.width=`${Math.round(100*processed/state.items.length)}%`;
-    stats.textContent=`Обработано ${processed}/${state.items.length} · в корзине ${counts[OK]||0}`;
-    const current=state.items[state.index];
-    status.textContent=[
-      `${state.running?'Выполняется':state.phase==='idle'?'Завершено':'Приостановлено'} · ${state.mode==='single'?'один товар':'весь Excel'}`,
-      `Поиск: только по WordPress ID товара`,
-      `Текущий: ${current?`${current.name||'Без названия'} [${current.id}]`:'—'}`,
-      ...Object.entries(counts).map(([s,n])=>`${s}: ${n}`)
-    ].join('\n');
-    if(logs) logs.textContent=(state.logs||[]).map(x=>`${x.time}  ${x.message}`).join('\n');
+    if (status !== 'done' && status !== 'not_found' && state.settings.stopOnError) {
+      state.running = false;
+      state.paused = true;
+      log('error','Обработка остановлена согласно настройке «Пауза при ошибке».',row);
+      release();
+      return;
+    }
+    if (nextPending() < 0) {
+      state.running = false;
+      state.paused = false;
+      log('ok','Обработка файла закончена. Можно скачать отчёт.');
+      release();
+    } else {
+      schedule(Math.max(600,Number(state.settings.delay) * 1000));
+    }
   }
-
-  renderStatus();
-  if (state?.running) {
-    const item = state.items?.[state.index];
-    if (item) setMessage(`Автопродолжение: ${item.name} (${item.id}). Этап: ${state.phase}.`);
-    delayStep();
+  function failFatal(message,row) {
+    if (row && !TERMINAL.has(row.status)) {
+      row.status='failed';row.message=message;row.finished=now();
+    }
+    state.running=false;state.paused=true;state.index=-1;state.phase='idle';state.pending=null;
+    log('error','Обработка остановлена: ' + message,row);
+    release();toast(message);
+  }
+  function findRow(doc,id) {
+    const rows = Array.from(doc.querySelectorAll('#the-list tr[id^="post-"]'));
+    return rows.find(r => r.id === 'post-' + id) || null;
+  }
+  function getTitle(row) {
+    return clean((row.querySelector('a.row-title') ||
+      row.querySelector('.column-name strong a') ||
+      row.querySelector('.column-name a'))?.textContent);
+  }
+  function trashLink(row,id) {
+    const link = row.querySelector('span.trash a.submitdelete, span.trash a');
+    if (!link) return null;
+    const href = link.getAttribute('href');
+    if (!href) return null;
+    const u = new URL(href,location.href);
+    if (u.origin !== location.origin || u.pathname !== '/wp-admin/post.php' ||
+      u.searchParams.get('post') !== id || u.searchParams.get('action') !== 'trash' ||
+      !u.searchParams.get('_wpnonce')) return null;
+    return u.href;
+  }
+  function searchForm(row) {
+    const field = document.querySelector('#post-search-input');
+    const submit = document.querySelector('#search-submit');
+    if (!field || !submit) return failFatal('Не найдены поле #post-search-input или кнопка Search products.',row);
+    const form = field.form || document.querySelector('#posts-filter');
+    if (!form) return failFatal('Не найдена форма списка товаров WordPress.',row);
+    field.focus();
+    field.value='';
+    field.dispatchEvent(new Event('input',{bubbles:true}));
+    field.dispatchEvent(new Event('change',{bubbles:true}));
+    field.value = row.id;
+    field.dispatchEvent(new Event('input',{bubbles:true}));
+    field.dispatchEvent(new Event('change',{bubbles:true}));
+    for (const name of ['post_status','product_cat','product_type','stock_status','paged']) {
+      const element = form.elements.namedItem(name);
+      if (!element || !('value' in element)) continue;
+      element.value = name === 'paged' ? '1' : '';
+    }
+    let postType = form.elements.namedItem('post_type');
+    if (!postType) {
+      postType = document.createElement('input');
+      postType.type='hidden'; postType.name='post_type';form.appendChild(postType);
+    }
+    postType.value='product';
+    form.method='get';
+    form.action = LIST;
+    state.phase='results';state.searchPages=0;
+    row.status='searching'; row.message='Ищем через Search products: ' + row.id;
+    log('info','Ввели ID ' + row.id + ' в #post-search-input и нажали Search products.',row);
+    const fallback=listUrl(row.id);
+    submit.click();
+    setTimeout(() => {
+      if (!state.running || !ownLease() || state.phase !== 'results' ||
+        current()?.id !== row.id || moving) return;
+      const q = new URL(location.href).searchParams.get('s');
+      if (q !== row.id) move(fallback,row);
+      else schedule(50);
+    },1700);
+  }
+  function processResults(row) {
+    const u = new URL(location.href);
+    if (u.searchParams.get('s') !== row.id) {
+      if (++state.checkAttempts > 2) return failFatal('Не удалось открыть выдачу поиска по ID ' + row.id,row);
+      persist();
+      return move(listUrl(row.id),row);
+    }
+    state.checkAttempts=0;
+    const list = document.querySelector('#the-list');
+    if (!list) return failFatal('WordPress не показал таблицу #the-list.',row);
+    state.searchPages++;
+    const found=findRow(document,row.id);
+    if (found) {
+      row.foundName=getTitle(found);
+      row.wpPostId=found.id.slice(5);
+      const link=trashLink(found,row.id);
+      if (!link) return finalize(row,'failed','Найден ID ' + row.id + ', но безопасная ссылка Trash недоступна.');
+      if (row.name && normalized(row.name) !== normalized(row.foundName)) {
+        log('warn','Название в Excel отличается: «' + row.name + '», на сайте «' + row.foundName + '». Удаление выполняется строго по ID.',row);
+      }
+      // The pending record is saved before the request so a reload cannot duplicate Trash.
+      state.phase='verifying';
+      state.pending={id:row.id,href:link,created:now()};
+      row.status='deleting';row.message='Запрос Trash отправляется...';
+      log('info','Найден точный post-' + row.id + ' («' + row.foundName + '»). Trash.',row);
+      return submitTrash(row,link);
+    }
+    const next=document.querySelector('.tablenav-pages a.next-page:not(.disabled)');
+    if (next?.getAttribute('href')) {
+      if (state.searchPages >= MAX_SEARCH_PAGES) {
+        return finalize(row,'failed','Поиск по ID ' + row.id + ': достигнут предел ' + MAX_SEARCH_PAGES + ' страниц.');
+      }
+      const href=new URL(next.getAttribute('href'),location.href);
+      if (href.origin !== location.origin || !href.pathname.endsWith('/edit.php') ||
+        href.searchParams.get('s') !== row.id) {
+        return finalize(row,'failed','WordPress вернул некорректную ссылку на следующую страницу.');
+      }
+      persist();
+      return move(href.href,row);
+    }
+    return finalize(row,'not_found','Товар с точным WordPress ID ' + row.id + ' не найден через Search products.');
+  }
+  async function checkedFetch(url) {
+    const response=await fetch(url,{credentials:'same-origin',redirect:'follow',cache:'no-store'});
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const target = new URL(response.url);
+    if (target.origin !== location.origin || target.pathname.endsWith('/wp-login.php')) {
+      throw new Error('WordPress перенаправил запрос на вход или другой сайт.');
+    }
+    const doc=new DOMParser().parseFromString(await response.text(),'text/html');
+    if (doc.querySelector('#loginform,.wp-die-message')) throw new Error('WordPress вернул страницу входа или ошибку.');
+    return doc;
+  }
+  async function submitTrash(row,link) {
+    if (busy) return;
+    busy=true;
+    try {
+      // Exactly the same nonce-protected GET as the WordPress "Trash" action.
+      await checkedFetch(link);
+      log('info','WordPress принял запрос Trash для ID ' + row.id + '. Проверяем корзину.',row);
+    } catch (e) {
+      log('error','Ответ Trash не подтверждён: ' + e.message + '. Повторно не отправляем.',row);
+    } finally {
+      busy=false;
+      row.status='verifying';
+      persist();
+      await verifyTrash(row);
+    }
+  }
+  async function verifyTrash(row) {
+    if (busy) return;
+    busy=true;
+    try {
+      for (let attempt=1;attempt<=3;attempt++) {
+        const doc=await checkedFetch(listUrl(row.id,'trash'));
+        if (!doc.querySelector('#the-list')) throw new Error('Таблица корзины WordPress не найдена.');
+        if (findRow(doc,row.id)) {
+          finalize(row,'done','ID ' + row.id + ' подтверждён в корзине WordPress.');
+          return;
+        }
+        if (attempt < 3) await delay(750);
+      }
+      finalize(row,'failed','После Trash товар ID ' + row.id +
+        ' не подтверждён в корзине. Автоматическое повторное удаление запрещено.');
+    } catch (e) {
+      finalize(row,'failed','Не удалось проверить корзину для ID ' + row.id + ': ' + e.message +
+        '. Повторный Trash запрещён.');
+      if (/вход|WordPress вернул/i.test(e.message)) {
+        state.running=false;state.paused=true;persist();release();
+      }
+    } finally {
+      busy=false;
+      if (state.running) schedule(Math.max(600,Number(state.settings.delay)*1000));
+    }
+  }
+  function runStep() {
+    if (!state.running || busy || moving) return;
+    if (!ownLease()) { state.running=false;state.paused=true;persist();toast('Очередь остановлена: управление перешло другой вкладке.');return; }
+    if (state.index < 0 || !current()) {
+      state.index=nextPending();
+      if (state.index<0) {state.running=false;state.phase='idle';log('ok','Нет ожидающих товаров.');release();return;}
+      state.phase='search';state.searchPages=0;state.checkAttempts=0;
+      persist();
+    }
+    const row=current();
+    if (!row || TERMINAL.has(row.status)) {state.index=-1;state.phase='idle';persist();return schedule();}
+    if (state.phase==='verifying' || state.phase==='deleting') {
+      // The action might have been sent before navigation/reload. Verify; never send it again.
+      row.status='verifying';
+      log('warn','Восстановление после перезагрузки: проверяем Trash, не нажимая повторно.',row);
+      return verifyTrash(row);
+    }
+    if (state.phase==='results') return processResults(row);
+    if (state.phase!=='search') state.phase='search';
+    if (!isList()) return move(LIST,row);
+    return searchForm(row);
+  }
+  function start(one=false) {
+    if (busy || moving) return toast('Текущее действие ещё не завершено.');
+    readState();
+    if (!state.rows.length) return toast('Сначала импортируйте Excel с ID товаров.');
+    if (!claim()) return;
+    if (state.index>=0 && !TERMINAL.has(current()?.status)) {
+      // Resume interrupted search/verification, but do not resend Trash.
+      state.phase = state.phase || 'search';
+    } else {
+      state.index=nextPending();
+      state.phase='search';
+    }
+    if (state.index<0) {release();return toast('В очереди нет товаров. Загрузите новый файл.');}
+    state.mode=one?'one':'batch';
+    state.runCount=0;
+    state.running=true;state.paused=false;state.owner=tabId;
+    if (!state.started) state.started=now();
+    log('info',(one?'Тест одного товара':'Массовая обработка') + ' запущен на ' + DOMAIN + '.');
+    schedule();
+  }
+  function reset() {
+    if (!canEdit()) return;
+    if (!confirm('Сбросить импорт, результаты и журнал для ' + DOMAIN +
+      '?\nТовары, уже помещённые в корзину, не восстановятся.')) return;
+    release();
+    state=defaults();book=null;fileName='';
+    $('#file').value='';
+    $('#filename').textContent='Файл не выбран';
+    $('#mapping').classList.add('hidden');
+    persist();
+    setTab('import');
+    toast('Очередь и журнал очищены.');
+  }
+  function sheetRows() {
+    const name = book?.SheetNames[Number($('#sheet').value)];
+    return name ? XLSX.utils.sheet_to_json(book.Sheets[name],
+      {header:1,raw:false,defval:'',blankrows:true}) : [];
+  }
+  function fillMapping() {
+    if (!book) return;
+    const data=sheetRows(),head=data[0]||[];
+    const width=Math.max(2,...data.slice(0,50).map(r=>r.length));
+    const headers=Array.from({length:width},(_,i)=>clean(head[i]));
+    const options=headers.map((h,i)=>'<option value="' + i + '">' + esc(String.fromCharCode(65+i) +
+      ' · ' + (h||'Колонка '+(i+1))) + '</option>').join('');
+    $('#mapId').innerHTML=options;$('#mapName').innerHTML=options;
+    const h=headers.map(s=>normalized(s).replace(/[\s_–-]+/g,''));
+    const aliasesId=['id','productid','idтовара','wpid','postid','идтовара'];
+    const aliasesName=['name','title','название','названиеигры','игра','productname','товар','game'];
+    let id=h.findIndex(x=>aliasesId.includes(x));
+    let title=h.findIndex(x=>aliasesName.includes(x));
+    if (id<0)id=1;
+    if (title<0)title=id===0?1:0;
+    $('#mapId').value=String(id);
+    $('#mapName').value=String(title);
+    $('#startRow').value=String(h.some(x=>aliasesId.includes(x)||aliasesName.includes(x))?2:1);
+    preview();
+  }
+  function preview() {
+    if (!book)return;
+    const rows=sheetRows(),from=Math.max(1,Number($('#startRow').value)||1);
+    const id=Number($('#mapId').value),title=Number($('#mapName').value);
+    const sample=rows.slice(from-1).filter(x=>clean(x[id])||clean(x[title])).slice(0,5);
+    $('#preview').textContent=sample.map((row,i)=>clean(row[id])+' · '+clean(row[title])).join('\n') ||
+      'Нет заполненных строк.';
+  }
+  async function readExcel(file) {
+    if (!file || !canEdit()) return;
+    try {
+      if (typeof XLSX==='undefined')throw new Error('Библиотека XLSX недоступна.');
+      if (file.size>25*1024*1024)throw new Error('Максимальный размер файла — 25 МБ.');
+      book=XLSX.read(await file.arrayBuffer(),{type:'array'});
+      fileName=file.name;
+      $('#filename').textContent=file.name + ' · ' + book.SheetNames.length + ' листов';
+      $('#sheet').innerHTML=book.SheetNames.map((name,i)=>'<option value="'+i+'">'+esc(name)+'</option>').join('');
+      $('#mapping').classList.remove('hidden');
+      fillMapping();
+      setTab('import');
+    } catch (e) {toast('Не удалось прочитать Excel: '+e.message);}
+  }
+  function importQueue() {
+    if (!book||!canEdit())return;
+    const idCol=Number($('#mapId').value),nameCol=Number($('#mapName').value);
+    if (idCol===nameCol)return toast('Колонка ID и названия должны отличаться.');
+    const from=Math.max(1,Number($('#startRow').value)||1), data=sheetRows();
+    const seen=new Set(),rows=[];
+    data.forEach((cells,i)=>{
+      if (i<from-1)return;
+      const id=clean(cells[idCol]),name=clean(cells[nameCol]);
+      if (!id&&!name)return;
+      const row={excelRow:i+1,id,name,status:'pending',message:'',foundName:'',wpPostId:'',finished:''};
+      if (!idValid(id)) {
+        row.status='skipped';row.message='Некорректный числовой WordPress ID.';
+      } else if (seen.has(id)) {
+        row.status='skipped';row.message='Повтор ID в Excel — удаление дубликата не выполняется.';
+      } else seen.add(id);
+      rows.push(row);
+    });
+    if (!rows.length)return toast('Не найдено строк с товарами.');
+    const valid=rows.filter(r=>r.status==='pending').length;
+    if (!valid)return toast('Нет корректных ID товаров.');
+    if (state.rows.length && !confirm('Заменить существующую очередь для ' + DOMAIN +
+      '?\nСначала можно сохранить старый отчёт.'))return;
+    state=defaults();
+    state.filename=fileName;state.sheet=book.SheetNames[Number($('#sheet').value)];
+    state.rows=rows;
+    log('info','Импорт: '+fileName+', '+rows.length+' строк, '+valid+' ID к обработке, '+
+      (rows.length-valid)+' пропущено.');
+    setTab('queue');
+  }
+  function report() {
+    if (!state.rows.length)return toast('Пустая очередь.');
+    if (typeof XLSX==='undefined')return toast('Библиотека XLSX недоступна.');
+    const columns=['Строка Excel','ID товара','Название из Excel','Название на сайте',
+      'WP post ID','Статус','Комментарий','Завершено'];
+    const line=r=>[r.excelRow,r.id,r.name,r.foundName,r.wpPostId,labels[r.status]||r.status,r.message,r.finished];
+    const wb=XLSX.utils.book_new();
+    const add=(name,data)=>{
+      const ws=XLSX.utils.aoa_to_sheet([columns,...data.map(line)]);
+      ws['!cols']=[{wch:13},{wch:20},{wch:48},{wch:48},{wch:18},{wch:22},{wch:90},{wch:25}];
+      XLSX.utils.book_append_sheet(wb,ws,name);
+    };
+    add('Все товары',state.rows);
+    add('Удалено',state.rows.filter(r=>r.status==='done'));
+    add('Не найдено',state.rows.filter(r=>r.status==='not_found'));
+    add('Ошибки удаления',state.rows.filter(r=>r.status==='failed'));
+    add('Пропущено',state.rows.filter(r=>r.status==='skipped'));
+    const logSheet=XLSX.utils.aoa_to_sheet([['Время','Уровень','ID','Строка','Сообщение'],
+      ...state.logs.map(x=>[x.time,x.level,x.id,x.row,x.message])]);
+    logSheet['!cols']=[{wch:25},{wch:13},{wch:20},{wch:14},{wch:100}];
+    XLSX.utils.book_append_sheet(wb,logSheet,'Журнал');
+    const safe=(state.filename||'products').replace(/\.(xlsx|xls|csv)$/i,'').replace(/[\\/:*?"<>|]/g,'_');
+    XLSX.writeFile(wb,safe+'_'+DOMAIN+'_trash_result.xlsx');
+    log('info','XLSX-отчёт сформирован.');
+  }
+  function downloadLog() {
+    const text=state.logs.map(x=>[new Date(x.time).toLocaleString('ru-RU'),x.level,
+      'ID '+(x.id||'—'),x.message].join(' | ')).join('\n');
+    const blob=new Blob([text],{type:'text/plain;charset=utf-8'});
+    const url=URL.createObjectURL(blob),a=document.createElement('a');
+    a.href=url;a.download='trash_log_'+DOMAIN+'.txt';a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }
+  const CSS = [
+    ':host{all:initial;font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#182438;color-scheme:light}',
+    '*{box-sizing:border-box}button,input,select{font:inherit}button{cursor:pointer;border:1px solid #d9e1eb;border-radius:9px;padding:8px 12px;background:#fff;color:#26354c;font-weight:600}button:hover{background:#f0f4fa}button:disabled{opacity:.42;cursor:default}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #4f7df3;outline-offset:2px}',
+    '.panel{position:fixed;right:22px;bottom:20px;width:710px;height:650px;max-width:calc(100vw - 24px);max-height:calc(100vh - 40px);background:white;box-shadow:0 18px 70px #0f233b40;border:1px solid #dae2ee;border-radius:16px;display:flex;flex-direction:column;overflow:hidden;resize:both;pointer-events:auto}',
+    '.panel.full{inset:24px!important;width:auto!important;height:auto!important;max-width:none;max-height:none;resize:none}',
+    '.head{background:#14263e;color:white;padding:16px 18px;display:flex;align-items:center;gap:12px;cursor:move;touch-action:none;user-select:none}.logo{height:36px;width:36px;background:#4275ed;display:grid;place-items:center;border-radius:10px;font-size:18px;font-weight:800}.head b{font-size:16px;letter-spacing:.2px}.head small{color:#b1c2d9;display:block;font-size:11px}.head .spacer{flex:1}.icon{background:#ffffff13;color:#fff;border-color:#ffffff22;padding:4px 9px}',
+    '.body{display:flex;flex-direction:column;min-height:0;flex:1}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:14px 16px 10px}.card{border:1px solid #e4eaf2;border-radius:10px;padding:9px 12px;background:#fafbfd}.card b{display:block;font-size:21px;line-height:1.25}.card span{font-size:11px;color:#68778c}.card.done b{color:#16835e}.card.bad b{color:#bd4f39}',
+    '.progress{height:5px;background:#eaf0f8;margin:0 16px;border-radius:5px;overflow:hidden}.progress i{height:100%;display:block;background:#4076ed;transition:width .3s}.current{padding:10px 16px;display:flex;gap:8px;align-items:center;color:#586b83;min-height:42px}.dot{height:8px;width:8px;background:#93a1b3;border-radius:50%;flex:none}.dot.run{background:#3974ee;box-shadow:0 0 0 4px #e5edff}.current span:last-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.actions{display:flex;gap:7px;flex-wrap:wrap;padding:0 16px 12px}.primary{background:#3468df!important;border-color:#3468df!important;color:white}.danger{color:#b04439;border-color:#eabcb6;background:#fff7f6}.tabs{display:flex;gap:18px;overflow:auto;flex-shrink:0;padding:0 16px;border-bottom:1px solid #e4eaf2}.tabs button{flex-shrink:0;border:0;border-radius:0;padding:10px 0;color:#7a889a;background:none;font-size:12px}.tabs button.on{color:#265cce;border-bottom:2px solid #3468df}',
+    '.view{padding:12px 16px;min-height:0;flex:1;overflow:auto}.hidden{display:none!important}.tools{display:flex;gap:8px;margin-bottom:10px}input,select{border:1px solid #dce3ed;border-radius:8px;background:#fff;padding:8px;color:#22324a;min-width:0}input[type=search]{flex:1}table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px}th{text-align:left;color:#7c899b;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:8px 6px;background:#f7f9fc;position:sticky;top:0}td{padding:10px 6px;border-bottom:1px solid #edf1f6;vertical-align:top}tr.currentrow{background:#eff5ff}td .title{font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}td small{color:#8290a2;display:block;font-size:10px;overflow-wrap:anywhere}.badge{font-size:10px;padding:3px 7px;border-radius:6px;display:inline-block;white-space:nowrap;background:#eef2f7;color:#62738a}.badge.done{background:#e4f5ec;color:#147c55}.badge.bad{background:#fff0e8;color:#b24b28}.badge.work{background:#e7efff;color:#2b62ce}',
+    '.foot{padding:10px 16px;border-top:1px solid #e4eaf2;display:flex;align-items:center;gap:8px;background:#fafbfd;font-size:11px;color:#7a889a}.foot span:first-child{flex:1}.foot button{padding:4px 8px;font-size:11px}.empty{text-align:center;padding:28px 16px;color:#77869b}.empty b{display:block;color:#31435c;font-size:16px;margin-bottom:6px}.drop{border:2px dashed #c4d2e9;border-radius:12px;text-align:center;padding:20px;margin:4px 0 12px;background:#f7faff}.drop.over{border-color:#3468df;background:#eaf1ff}.drop label{cursor:pointer;color:#2b63d4;font-weight:700}.drop small{display:block;margin-top:5px;color:#7b8a9e}.mapping{display:grid;grid-template-columns:120px 1fr;gap:8px;align-items:center}.mapping label{color:#61728a}.hint{font-size:12px;color:#6d7e94;margin:10px 0}.logline{display:grid;grid-template-columns:80px 80px 1fr;gap:8px;padding:8px 0;border-bottom:1px solid #edf1f6;font-size:11px;overflow-wrap:anywhere}.logline.error{color:#a83f2f}.logline.ok{color:#147c55}.logline.warn{color:#955e0d}',
+    '.pill{position:fixed;right:22px;bottom:20px;border-radius:14px;background:#14263e;color:#fff;padding:12px 18px;box-shadow:0 8px 30px #0f233b40;pointer-events:auto}.pill:hover{background:#24466b;color:white}.notice{position:absolute;bottom:54px;left:16px;right:16px;z-index:8;padding:12px;background:#fff7e7;border:1px solid #e3cdab;border-radius:10px;color:#75551f;box-shadow:0 6px 20px #0002}.notice button{float:right;padding:0 6px;margin-right:5px}.help h3{font-size:13px;color:#263d5c}.help p,.help li{font-size:12px;color:#61728a}.help ol{padding-left:20px}.setting{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #edf1f6}.setting input[type=number]{width:80px}.setting small{display:block;color:#7a899c}',
+    '@media(max-width:550px){.panel{right:8px;bottom:8px;max-width:calc(100vw - 16px)}.stats{gap:4px}.card{padding:7px}.tabs{gap:12px}.actions button{font-size:11px;padding:7px}}'
+  ].join('');
+  function mount() {
+    const host=document.createElement('div');
+    host.id='sb-product-trash-app';
+    host.style.cssText='position:fixed;z-index:2147483646;inset:0;pointer-events:none';
+    document.documentElement.append(host);
+    root=host.attachShadow({mode:'open'});
+    root.innerHTML='<style>'+CSS+'</style>'+
+      '<button class="pill hidden" id="pill">Product Trash · открыть</button>'+
+      '<section class="panel" id="panel"><header class="head" id="drag">'+
+      '<div class="logo">T</div><div><b>Product Trash Manager</b><small>'+esc(DOMAIN)+' · WooCommerce · v'+VERSION+'</small></div>'+
+      '<span class="spacer"></span><button class="icon" id="full" title="На весь экран">⛶</button>'+
+      '<button class="icon" id="min" title="Свернуть">—</button></header>'+
+      '<div class="body"><div class="stats">'+
+      '<div class="card"><b id="total">0</b><span>Товаров в файле</span></div>'+
+      '<div class="card done"><b id="done">0</b><span>Удалено</span></div>'+
+      '<div class="card bad"><b id="missing">0</b><span>Не найдено</span></div>'+
+      '<div class="card bad"><b id="errors">0</b><span>Ошибки</span></div></div>'+
+      '<div class="progress"><i id="bar"></i></div>'+
+      '<div class="current"><i class="dot" id="dot"></i><span id="current">Загрузите Excel с товарами</span></div>'+
+      '<div class="actions"><button class="primary" id="start">▶ Начать</button><button id="one">Тест: 1 товар</button>'+
+      '<button id="pause">Ⅱ Пауза</button><button class="danger" id="stop">■ Стоп</button>'+
+      '<button id="report">↓ Отчёт Excel</button></div>'+
+      '<nav class="tabs">'+
+      '<button data-tab="queue" class="on">Очередь</button>'+
+      '<button data-tab="not_found">Не найдены</button>'+
+      '<button data-tab="failed">Ошибки удаления</button>'+
+      '<button data-tab="log">Журнал</button>'+
+      '<button data-tab="import">Импорт Excel</button>'+
+      '<button data-tab="help">Как работать</button></nav>'+
+      '<div class="view" id="queue"><div class="tools">'+
+      '<input type="search" id="search" placeholder="Поиск по ID или названию…">'+
+      '<select id="filter"><option value="all">Все статусы</option><option value="pending">В очереди</option>'+
+      '<option value="done">Удалены</option><option value="skipped">Пропущено</option></select></div><div id="rows"></div></div>'+
+      '<div class="view hidden" id="not_found"><div id="missingRows"></div></div>'+
+      '<div class="view hidden" id="failed"><div id="failedRows"></div></div>'+
+      '<div class="view hidden" id="log"><div class="tools"><button id="downloadLog">↓ Скачать журнал TXT</button></div><div id="logs"></div></div>'+
+      '<div class="view hidden" id="import"><div class="tools"><button class="danger" id="reset">Сбросить очередь и журнал</button></div>'+
+      '<div class="drop" id="drop"><label for="file">Выбрать Excel / CSV</label><input type="file" id="file" accept=".xlsx,.xls,.csv" hidden>'+
+      '<small>Или перетащите файл сюда</small><small id="filename">Файл не выбран</small></div>'+
+      '<div class="hidden" id="mapping"><div class="mapping"><label for="sheet">Лист Excel</label><select id="sheet"></select>'+
+      '<label for="mapId">ID товара</label><select id="mapId"></select>'+
+      '<label for="mapName">Название игры</label><select id="mapName"></select>'+
+      '<label for="startRow">Первая строка данных</label><input id="startRow" type="number" min="1" value="2"></div>'+
+      '<p class="hint">ID — это числовой WordPress post ID, соответствующий элементу post-ID в таблице товаров. Название используется для журнала и сверки.</p>'+
+      '<pre id="preview" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#f6f8fc;padding:10px;border-radius:9px"></pre>'+
+      '<button class="primary" id="load">Загрузить в очередь</button></div>'+
+      '<p class="hint">Каждый сайт хранит свою очередь отдельно. Повтор одного ID в файле пропускается.</p>'+
+      '<div class="setting"><div>Пауза между товарами<small>Секунды, 1–30</small></div>'+
+      '<input id="delay" type="number" min="1" max="30" value="2"></div>'+
+      '<label class="setting"><input id="stopOnError" type="checkbox"><div>Останавливаться при ошибке удаления<small>Не найденные товары всегда записываются отдельно, очередь продолжается.</small></div></label></div>'+
+      '<div class="view help hidden" id="help">'+
+      '<h3>Порядок работы</h3><ol>'+
+      '<li>Откройте wp-admin одного из поддерживаемых сайтов. Выберите Excel-файл с названиями игр и числовыми ID товаров.</li>'+
+      '<li>На вкладке «Импорт Excel» сопоставьте столбцы и нажмите «Загрузить в очередь».</li>'+
+      '<li>Нажмите «Тест: 1 товар»: скрипт найдёт и поместит в корзину ровно один товар. Это настоящее удаление в Trash.</li>'+
+      '<li>Если тест прошёл успешно, нажмите «Начать» для оставшихся ID.</li>'+
+      '<li>Для каждого ID скрипт вводит его в #post-search-input, нажимает Search products, ищет точную строку post-ID и использует её ссылку Trash.</li>'+
+      '<li>После каждого Trash скрипт ищет тот же ID в корзине и фиксирует результат. Ошибки не приводят к повторному нажатию Trash.</li>'+
+      '<li>Откройте «Не найдены» и «Ошибки удаления», затем скачайте отчёт Excel с отдельными листами.</li>'+
+      '</ol><h3>Ограничения</h3><p>На сайте должен поддерживаться поиск WordPress-товаров по ID в поле Search products. Если стандартный поиск не индексирует ID, скрипт запишет товар как не найденный, а не удалит другой товар.</p>'+
+      '<p>Обработка одного сайта ведётся в одной вкладке; очередь и журнал не смешиваются с другими доменами.</p>'+
+      '<p>Автообновление выполняется Tampermonkey через GitHub при увеличении @version.</p></div>'+
+      '<footer class="foot"><span id="footer">Очередь сохраняется локально в Tampermonkey</span>'+
+      '<button id="prev" title="Предыдущая страница">←</button><span id="pages">1 / 1</span>'+
+      '<button id="next" title="Следующая страница">→</button></footer></div></section>';
+    panel=$('#panel');
+    const layout=GM_getValue(LAYOUT,null);
+    if (layout && typeof layout==='object') {
+      for (const p of ['left','top','width','height']) {
+        if (Number.isFinite(layout[p])) panel.style[p]=layout[p]+'px';
+      }
+      if (Number.isFinite(layout.left)) panel.style.right='auto';
+      if (Number.isFinite(layout.top)) panel.style.bottom='auto';
+    }
+    $('#min').onclick=()=>{
+      panel.classList.add('hidden');$('#pill').classList.remove('hidden');
+    };
+    const show=()=>{
+      panel.classList.remove('hidden');$('#pill').classList.add('hidden');
+      render();
+    };
+    $('#pill').onclick=show;
+    if (typeof GM_registerMenuCommand==='function')GM_registerMenuCommand('Открыть Product Trash Manager',show);
+    $('#full').onclick=()=>{
+      expanded=!expanded;panel.classList.toggle('full',expanded);
+      if (!expanded) {panel.style.left='';panel.style.top='';panel.style.right='22px';panel.style.bottom='20px';}
+    };
+    $('#drag').addEventListener('pointerdown',e=>{
+      if (e.target.closest('button')||expanded||e.button!==0)return;
+      const r=panel.getBoundingClientRect();
+      dragging={dx:e.clientX-r.left,dy:e.clientY-r.top};
+      e.currentTarget.setPointerCapture(e.pointerId);
+    });
+    $('#drag').addEventListener('pointermove',e=>{
+      if(!dragging)return;
+      panel.style.left=Math.max(0,Math.min(innerWidth-panel.offsetWidth,e.clientX-dragging.dx))+'px';
+      panel.style.top=Math.max(0,Math.min(innerHeight-panel.offsetHeight,e.clientY-dragging.dy))+'px';
+      panel.style.right='auto';panel.style.bottom='auto';
+    });
+    $('#drag').addEventListener('pointerup',()=>dragging=null);
+    $('#drag').addEventListener('pointercancel',()=>dragging=null);
+    const layoutSave=()=>{
+      if(expanded||panel.classList.contains('hidden'))return;
+      const r=panel.getBoundingClientRect();
+      GM_setValue(LAYOUT,{left:r.left,top:r.top,width:r.width,height:r.height});
+    };
+    $('#drag').addEventListener('pointerup',layoutSave);
+    if (typeof ResizeObserver!=='undefined') {
+      let timeout;
+      new ResizeObserver(()=>{clearTimeout(timeout);timeout=setTimeout(layoutSave,600);}).observe(panel);
+    }
+    $$('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
+    $('#start').onclick=()=>start(false);
+    $('#one').onclick=()=>start(true);
+    $('#pause').onclick=()=>pause();
+    $('#stop').onclick=stop;
+    $('#report').onclick=report;
+    $('#downloadLog').onclick=downloadLog;
+    $('#reset').onclick=reset;
+    $('#prev').onclick=()=>{page=Math.max(0,page-1);renderRows();};
+    $('#next').onclick=()=>{page++;renderRows();};
+    $('#search').oninput=e=>{search=e.target.value;page=0;renderRows();};
+    $('#filter').onchange=e=>{filter=e.target.value;page=0;renderRows();};
+    $('#file').onchange=e=>readExcel(e.target.files?.[0]);
+    $('#sheet').onchange=fillMapping;
+    $('#mapId').onchange=preview;$('#mapName').onchange=preview;$('#startRow').onchange=preview;
+    $('#load').onclick=importQueue;
+    const drop=$('#drop');
+    drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('over');});
+    drop.addEventListener('dragleave',()=>drop.classList.remove('over'));
+    drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('over');readExcel(e.dataTransfer.files[0]);});
+    $('#delay').value=state.settings.delay;
+    $('#stopOnError').checked=!!state.settings.stopOnError;
+    $('#delay').onchange=e=>{
+      if(!canEdit()){e.target.value=state.settings.delay;return;}
+      state.settings.delay=Math.min(30,Math.max(1,Number(e.target.value)||2));
+      e.target.value=state.settings.delay;persist();
+    };
+    $('#stopOnError').onchange=e=>{
+      if(!canEdit()){e.target.checked=state.settings.stopOnError;return;}
+      state.settings.stopOnError=e.target.checked;persist();
+    };
+    if(!state.rows.length)setTab('import');
+    else render();
+  }
+  function setTab(tab) {
+    activeTab=tab;page=0;
+    for(const name of ['queue','not_found','failed','log','import','help'])
+      $('#'+name).classList.toggle('hidden',name!==tab);
+    $$('[data-tab]').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
+    render();
+  }
+  function subset() {
+    if (activeTab==='not_found') return state.rows.filter(x=>x.status==='not_found');
+    if (activeTab==='failed') return state.rows.filter(x=>x.status==='failed');
+    return state.rows.filter(x=>{
+      const matches=filter==='all'||(filter==='pending' ? ['pending','searching','deleting','verifying'].includes(x.status) : x.status===filter);
+      return matches && normalized(x.id+' '+x.name+' '+x.foundName).includes(normalized(search));
+    });
+  }
+  function renderRows() {
+    if(!root)return;
+    if(!['queue','not_found','failed'].includes(activeTab))return;
+    const rows=subset();
+    const pages=Math.max(1,Math.ceil(rows.length/PAGESIZE));
+    page=Math.min(page,pages-1);
+    $('#pages').textContent=(page+1)+' / '+pages;
+    $('#prev').disabled=page===0;$('#next').disabled=page>=pages-1;
+    const target=activeTab==='queue' ? $('#rows') : activeTab==='not_found' ? $('#missingRows') : $('#failedRows');
+    if(!rows.length){
+      target.innerHTML='<div class="empty"><b>Список пуст</b>'+
+        (activeTab==='queue'?'Импортируйте Excel или измените фильтр.':'Здесь пока нет записей.')+'</div>';
+      return;
+    }
+    target.innerHTML='<table><thead><tr><th style="width:50px">Строка</th><th>Игра / ID</th>'+
+      '<th style="width:112px">Статус</th></tr></thead><tbody>'+
+      rows.slice(page*PAGESIZE,page*PAGESIZE+PAGESIZE).map(r=>
+        '<tr class="'+(current()===r?'currentrow':'')+'"><td>'+r.excelRow+'</td>'+
+        '<td><span class="title" title="'+esc(r.name||r.foundName||'—')+'">'+esc(r.name||r.foundName||'Название не указано')+
+        '</span><small>ID '+esc(r.id)+' · '+esc(r.message||'')+'</small></td>'+
+        '<td><span class="badge '+(statuses[r.status]||'neutral')+'">'+(labels[r.status]||esc(r.status))+
+        '</span></td></tr>'
+      ).join('')+'</tbody></table>';
+  }
+  function renderLogs() {
+    $('#logs').innerHTML=state.logs.slice().reverse().map(x=>
+      '<div class="logline '+esc(x.level)+'"><time>'+esc(new Date(x.time).toLocaleTimeString('ru-RU'))+
+      '</time><span>'+esc(x.id?'ID '+x.id:'Система')+'</span><span>'+esc(x.message)+'</span></div>'
+    ).join('')||'<div class="empty">Журнал пока пуст</div>';
+  }
+  function render() {
+    if(!root)return;
+    const count=s=>state.rows.filter(r=>r.status===s).length;
+    const done=count('done'),missing=count('not_found'),error=count('failed');
+    const pending=count('pending')+count('searching')+count('deleting')+count('verifying');
+    $('#total').textContent=state.rows.length;
+    $('#done').textContent=done;
+    $('#missing').textContent=missing;
+    $('#errors').textContent=error;
+    $('#bar').style.width=(state.rows.length?
+      Math.round(100*(done+missing+error+count('skipped'))/state.rows.length):0)+'%';
+    const row=current();
+    $('#current').textContent=state.running?
+      'Обработка ID '+(row?.id||'—')+' · '+(labels[row?.status]||'Поиск'):
+      state.paused?'Пауза · нажмите «Начать» для продолжения':
+      state.rows.length?(state.filename+' · ожидают: '+pending):
+      'Загрузите Excel с ID товаров';
+    $('#dot').classList.toggle('run',state.running);
+    const hasPending=nextPending()>=0||!!(row&&!TERMINAL.has(row.status));
+    $('#start').textContent=state.paused?'▶ Продолжить':'▶ Начать';
+    $('#start').disabled=state.running||busy||!hasPending;
+    $('#one').disabled=state.running||busy||!hasPending;
+    $('#pause').disabled=!state.running;
+    $('#stop').disabled=!state.running;
+    $('#report').disabled=!state.rows.length;
+    $('#load').disabled=state.running||busy;
+    $('#reset').disabled=state.running||busy;
+    $('#footer').textContent=state.updated?'Сохранено · '+new Date(state.updated).toLocaleTimeString('ru-RU'):
+      'Очередь сохраняется автоматически';
+    $$('[data-tab]').forEach(b=>{
+      const n=b.dataset.tab;
+      if(n==='not_found')b.textContent='Не найдены ('+missing+')';
+      if(n==='failed')b.textContent='Ошибки удаления ('+error+')';
+    });
+    if(['queue','not_found','failed'].includes(activeTab))renderRows();
+    if(activeTab==='log')renderLogs();
+    $('.foot #prev').classList.toggle('hidden',!['queue','not_found','failed'].includes(activeTab));
+    $('.foot #next').classList.toggle('hidden',!['queue','not_found','failed'].includes(activeTab));
+    $('.foot #pages').classList.toggle('hidden',!['queue','not_found','failed'].includes(activeTab));
+  }
+  mount();
+  if(state.running && state.owner === tabId) {
+    if(claim()) {
+      log('info','Возобновление после перехода или перезагрузки вкладки.');
+      schedule(250);
+    } else {
+      state.running=false;state.paused=true;persist();
+    }
   }
 })();
