@@ -299,7 +299,7 @@
       state.phase='deleting';
       save();
       busy=false;
-      return trashAndVerify(candidate,item);
+      return await trashAndVerify(candidate,item);
     } catch(e) {
       if(state===job&&state.index===jobIndex) mark('Ошибка проверки ID',String(e.message||e));
     } finally {
