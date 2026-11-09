@@ -7,12 +7,19 @@
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
 // @downloadURL  https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
 // @match        https://keymplace.com/wp-admin/*
+// @match        https://keymplace.com/wp-login.php*
 // @match        https://playfun.pro/wp-admin/*
+// @match        https://playfun.pro/wp-login.php*
 // @match        https://prime2key.com/wp-admin/*
+// @match        https://prime2key.com/wp-login.php*
 // @match        https://digitplaystore.com/wp-admin/*
+// @match        https://digitplaystore.com/wp-login.php*
 // @match        https://googolsell.com/wp-admin/*
+// @match        https://googolsell.com/wp-login.php*
 // @match        https://steambuy.pro/wp-admin/*
+// @match        https://steambuy.pro/wp-login.php*
 // @match        https://ggmarket.pro/wp-admin/*
+// @match        https://ggmarket.pro/wp-login.php*
 // @noframes
 // @require      https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js
 // @grant        GM_getValue
@@ -762,6 +769,15 @@
     $('.foot #prev').classList.toggle('hidden',!['queue','not_found','failed'].includes(activeTab));
     $('.foot #next').classList.toggle('hidden',!['queue','not_found','failed'].includes(activeTab));
     $('.foot #pages').classList.toggle('hidden',!['queue','not_found','failed'].includes(activeTab));
+  }
+  // Do not resume unattended after a WordPress login redirect.
+  if(location.pathname.endsWith('/wp-login.php')) {
+    if(state.running) {
+      state.running=false;state.paused=true;
+      log('error','Сессия WordPress закончилась. Войдите снова и нажмите «Продолжить» вручную.');
+      release();
+    }
+    return;
   }
   mount();
   if(state.running && state.owner === tabId) {
