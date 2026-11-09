@@ -359,6 +359,9 @@
     }
 
     const candidate = state.candidates[0];
+    if (candidate.postId !== clean(item.id)) {
+      return mark('ID не совпал', 'Сохранённый результат старого поиска имеет другой WordPress ID. Удаление заблокировано.');
+    }
     if (!validTrashLink(candidate)) {
       return mark('Нет ссылки Trash', 'Название совпало, но безопасная ссылка на перемещение в корзину не найдена.');
     }
