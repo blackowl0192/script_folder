@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SteamBuy — Product Trash Manager
 // @namespace    https://steambuy.pro/
-// @version      2.0.2
+// @version      2.0.3
 // @description  Excel → поиск товара по ID в WordPress → Trash → следующий; очередь, журнал, отдельные списки ошибок, 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -24,7 +24,7 @@
 (() => {
   'use strict';
   // Version 2 uses a new queue key: old running 1.x jobs cannot trigger deletions after upgrade.
-  const VERSION = '2.0.2';
+  const VERSION = '2.0.3';
   const DOMAIN = location.hostname;
   const PREFIX = 'sb-product-trash-v2:' + DOMAIN;
   const KEY = PREFIX + ':state';
@@ -349,11 +349,23 @@
     busy=true;
     try {
       for (let attempt=1;attempt<=3;attempt++) {
-        const doc=await checkedFetch(listUrl(row.id,'trash'));
-        if (!doc.querySelector('#the-list')) throw new Error('Таблица корзины WordPress не найдена.');
-        if (findRow(doc,row.id)) {
-          finalize(row,'done','ID ' + row.id + ' подтверждён в корзине WordPress.');
-          return;
+        let nextUrl = listUrl(row.id,'trash');
+        for (let p=0;p<MAX_SEARCH_PAGES;p++) {
+          const doc=await checkedFetch(nextUrl);
+          if (!doc.querySelector('#the-list')) throw new Error('Таблица корзины WordPress не найдена.');
+          if (findRow(doc,row.id)) {
+            finalize(row,'done','ID ' + row.id + ' подтверждён в корзине WordPress.');
+            return;
+          }
+          const next=doc.querySelector('.tablenav-pages a.next-page:not(.disabled)');
+          if (!next?.getAttribute('href')) break;
+          if (p===MAX_SEARCH_PAGES-1) throw new Error('Лимит страниц корзины: '+MAX_SEARCH_PAGES);
+          const u=new URL(next.getAttribute('href'),nextUrl);
+          if (u.origin !== location.origin || !u.pathname.endsWith('/edit.php') ||
+            u.searchParams.get('post_type')!=='product' ||
+            u.searchParams.get('post_status')!=='trash' ||
+            u.searchParams.get('s')!==row.id) throw new Error('Неверная ссылка следующей страницы корзины.');
+          nextUrl=u.href;
         }
         if (attempt < 3) await delay(750);
       }
@@ -629,9 +641,11 @@
     }
     $('#min').onclick=()=>{
       panel.classList.add('hidden');$('#pill').classList.remove('hidden');
+      GM_setValue(PREFIX+':minimized',true);
     };
     const show=()=>{
       panel.classList.remove('hidden');$('#pill').classList.add('hidden');
+      GM_setValue(PREFIX+':minimized',false);
       render();
     };
     $('#pill').onclick=show;
@@ -695,6 +709,9 @@
       if(!canEdit()){e.target.checked=state.settings.stopOnError;return;}
       state.settings.stopOnError=e.target.checked;persist();
     };
+    if (GM_getValue(PREFIX+':minimized',false)) {
+      panel.classList.add('hidden');$('#pill').classList.remove('hidden');
+    }
     if(!state.rows.length)setTab('import');
     else render();
   }
