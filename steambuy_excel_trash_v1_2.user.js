@@ -547,7 +547,7 @@
       '<button data-tab="import">Импорт Excel</button>'+
       '<button data-tab="help">Как работать</button></nav>'+
       '<div class="view" id="queue"><div class="tools">'+
-      '<input type="search" id="search" placeholder="Поиск по ID или названию…">'+
+      '<input type="search" id="search" placeholder="Фильтр очереди: ссылка, ID, название…">'+
       '<select id="filter"><option value="all">Все статусы</option><option value="pending">В очереди</option>'+
       '<option value="done">Удалены</option><option value="skipped">Пропущено</option></select></div><div id="rows"></div></div>'+
       '<div class="view hidden" id="not_found"><div id="missingRows"></div></div>'+
@@ -556,29 +556,27 @@
       '<div class="view hidden" id="import"><div class="tools"><button class="danger" id="reset">Сбросить очередь и журнал</button></div>'+
       '<div class="drop" id="drop"><label for="file">Выбрать Excel / CSV</label><input type="file" id="file" accept=".xlsx,.xls,.csv" hidden>'+
       '<small>Или перетащите файл сюда</small><small id="filename">Файл не выбран</small></div>'+
-      '<div class="hidden" id="mapping"><div class="mapping"><label for="sheet">Лист Excel</label><select id="sheet"></select>'+
-      '<label for="mapId">ID товара</label><select id="mapId"></select>'+
-      '<label for="mapName">Название игры</label><select id="mapName"></select>'+
-      '<label for="startRow">Первая строка данных</label><input id="startRow" type="number" min="1" value="2"></div>'+
-      '<p class="hint">ID — это числовой WordPress post ID, соответствующий элементу post-ID в таблице товаров. Название используется для журнала и сверки.</p>'+
+      '<div class="hidden" id="mapping"><div class="mapping"><label for="sheet">Лист Excel</label><select id="sheet"></select>'+ 
+      '<label>Столбец</label><strong id="linkColumn">—</strong></div>'+
+      '<p class="hint">Обязательный столбец: product_link. В нём укажите ссылки вида https://${DOMAIN}/wp-admin/post.php?post=3287&amp;action=edit. Другие столбцы не нужны. ID автоматически извлекается из ссылки.</p>'+
       '<pre id="preview" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#f6f8fc;padding:10px;border-radius:9px"></pre>'+
       '<button class="primary" id="load">Загрузить в очередь</button></div>'+
-      '<p class="hint">Каждый сайт хранит свою очередь отдельно. Повтор одного ID в файле пропускается.</p>'+
+      '<p class="hint">Каждый сайт хранит собственную очередь. Повторные ссылки на товар пропускаются; чужие домены блокируются.</p>'+
       '<div class="setting"><div>Пауза между товарами<small>Секунды, 1–30</small></div>'+
       '<input id="delay" type="number" min="1" max="30" value="2"></div>'+
       '<label class="setting"><input id="stopOnError" type="checkbox"><div>Останавливаться при ошибке удаления<small>Не найденные товары всегда записываются отдельно, очередь продолжается.</small></div></label></div>'+
       '<div class="view help hidden" id="help">'+
-      '<h3>Порядок работы</h3><ol>'+
-      '<li>Откройте wp-admin одного из поддерживаемых сайтов. Выберите Excel-файл с названиями игр и числовыми ID товаров.</li>'+
-      '<li>На вкладке «Импорт Excel» сопоставьте столбцы и нажмите «Загрузить в очередь».</li>'+
-      '<li>Нажмите «Тест: 1 товар»: скрипт найдёт и поместит в корзину ровно один товар. Это настоящее удаление в Trash.</li>'+
-      '<li>Если тест прошёл успешно, нажмите «Начать» для оставшихся ID.</li>'+
-      '<li>Для каждого ID скрипт вводит его в #post-search-input, нажимает Search products, ищет точную строку post-ID и использует её ссылку Trash.</li>'+
-      '<li>После каждого Trash скрипт ищет тот же ID в корзине и фиксирует результат. Ошибки не приводят к повторному нажатию Trash.</li>'+
-      '<li>Откройте «Не найдены» и «Ошибки удаления», затем скачайте отчёт Excel с отдельными листами.</li>'+
-      '</ol><h3>Ограничения</h3><p>На сайте должен поддерживаться поиск WordPress-товаров по ID в поле Search products. Если стандартный поиск не индексирует ID, скрипт запишет товар как не найденный, а не удалит другой товар.</p>'+
-      '<p>Обработка одного сайта ведётся в одной вкладке; очередь и журнал не смешиваются с другими доменами.</p>'+
-      '<p>Автообновление выполняется Tampermonkey через GitHub при увеличении @version.</p></div>'+
+      '<h3>Как удалить товары по product_link</h3><ol>'+
+      '<li>В Excel подготовьте один обязательный столбец <b>product_link</b>. Каждая строка — ссылка редактора товара этого сайта.</li>'+
+      '<li>В разделе «Импорт Excel» выберите файл и лист, затем нажмите «Загрузить в очередь».</li>'+
+      '<li>Нажмите «Тест: 1 товар», чтобы реально переместить в корзину только один товар из списка.</li>'+
+      '<li>Нажмите «Начать» для остальных. Скрипт по очереди открывает product_link; поиск ID в списке товаров больше не используется.</li>'+
+      '<li>В карточке сверяется ID из ссылки и тип записи product, затем нажимается кнопка #delete-action → Move to Trash.</li>'+
+      '<li>После перехода проверяется результат. При перезагрузке ссылка Trash повторно не нажимается.</li>'+
+      '<li>Не открывшиеся карточки фиксируются в «Не найдены». Отсутствующая кнопка или неподтверждённое удаление — в «Ошибки удаления».</li>'+
+      '<li>После работы скачайте Excel-отчёт или TXT-журнал.</li>'+
+      '</ol><h3>Безопасность</h3><p>Принимаются только редакторские ссылки того же домена. Некорректные URL и дубли пропускаются. Очереди сайтов независимы. Trash — перемещение в корзину, а не безвозвратное удаление.</p>'+
+      '<p>Версии обновляются Tampermonkey через GitHub.</p></div>'+
       '<footer class="foot"><span id="footer">Очередь сохраняется локально в Tampermonkey</span>'+
       '<button id="prev" title="Предыдущая страница">←</button><span id="pages">1 / 1</span>'+
       '<button id="next" title="Следующая страница">→</button></footer></div></section>';
@@ -644,7 +642,7 @@
     $('#filter').onchange=e=>{filter=e.target.value;page=0;renderRows();};
     $('#file').onchange=e=>readExcel(e.target.files?.[0]);
     $('#sheet').onchange=fillMapping;
-    $('#mapId').onchange=preview;$('#mapName').onchange=preview;$('#startRow').onchange=preview;
+    
     $('#load').onclick=importQueue;
     const drop=$('#drop');
     drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('over');});
@@ -678,8 +676,8 @@
     if (activeTab==='not_found') return state.rows.filter(x=>x.status==='not_found');
     if (activeTab==='failed') return state.rows.filter(x=>x.status==='failed');
     return state.rows.filter(x=>{
-      const matches=filter==='all'||(filter==='pending' ? ['pending','searching','deleting','verifying'].includes(x.status) : x.status===filter);
-      return matches && normalized(x.id+' '+x.name+' '+x.foundName).includes(normalized(search));
+      const matches=filter==='all'||(filter==='pending' ? ['pending','opening','deleting','verifying'].includes(x.status) : x.status===filter);
+      return matches && normalized(x.id+' '+x.productLink+' '+x.foundName).includes(normalized(search));
     });
   }
   function renderRows() {
@@ -700,8 +698,8 @@
       '<th style="width:112px">Статус</th></tr></thead><tbody>'+
       rows.slice(page*PAGESIZE,page*PAGESIZE+PAGESIZE).map(r=>
         '<tr class="'+(current()===r?'currentrow':'')+'"><td>'+r.excelRow+'</td>'+
-        '<td><span class="title" title="'+esc(r.name||r.foundName||'—')+'">'+esc(r.name||r.foundName||'Название не указано')+
-        '</span><small>ID '+esc(r.id)+' · '+esc(r.message||'')+'</small></td>'+
+        '<td><span class="title" title="'+esc(r.foundName||r.productLink||'—')+'">'+esc(r.foundName||('Товар ID '+(r.id||'—')))+
+        '</span><small>'+esc(r.productLink||'')+'</small><small>'+esc(r.message||'')+'</small></td>'+
         '<td><span class="badge '+(statuses[r.status]||'neutral')+'">'+(labels[r.status]||esc(r.status))+
         '</span></td></tr>'
       ).join('')+'</tbody></table>';
@@ -716,7 +714,7 @@
     if(!root)return;
     const count=s=>state.rows.filter(r=>r.status===s).length;
     const done=count('done'),missing=count('not_found'),error=count('failed');
-    const pending=count('pending')+count('searching')+count('deleting')+count('verifying');
+    const pending=count('pending')+count('opening')+count('deleting')+count('verifying');
     $('#total').textContent=state.rows.length;
     $('#done').textContent=done;
     $('#missing').textContent=missing;
@@ -725,10 +723,10 @@
       Math.round(100*(done+missing+error+count('skipped'))/state.rows.length):0)+'%';
     const row=current();
     $('#current').textContent=state.running?
-      'Обработка ID '+(row?.id||'—')+' · '+(labels[row?.status]||'Поиск'):
+      'Обработка ссылки ID '+(row?.id||'—')+' · '+(labels[row?.status]||'Открытие'):
       state.paused?'Пауза · нажмите «Начать» для продолжения':
       state.rows.length?(state.filename+' · ожидают: '+pending):
-      'Загрузите Excel с ID товаров';
+      'Загрузите Excel с product_link';
     $('#dot').classList.toggle('run',state.running);
     const hasPending=nextPending()>=0||!!(row&&!TERMINAL.has(row.status));
     const lease=GM_getValue(LEASE,null);
