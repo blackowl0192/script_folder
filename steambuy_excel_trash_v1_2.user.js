@@ -409,35 +409,28 @@
     return name ? XLSX.utils.sheet_to_json(book.Sheets[name],
       {header:1,raw:false,defval:'',blankrows:true}) : [];
   }
+  function linkColumn() {
+    return (sheetRows()[0]||[]).findIndex(x=>normalized(x).replace(/[\s\-]+/g,'_')==='product_link');
+  }
+  function linkCell(data,r,c) {
+    const shown=clean(data[r]?.[c]);
+    const sheet=book.Sheets[book.SheetNames[Number($('#sheet').value)]];
+    const target=clean(sheet[XLSX.utils.encode_cell({r,c})]?.l?.Target);
+    return /^https?:\/\//i.test(shown)||shown.startsWith('/wp-admin/')?shown:(target||shown);
+  }
   function fillMapping() {
-    if (!book) return;
-    const data=sheetRows(),head=data[0]||[];
-    const width=Math.max(2,...data.slice(0,50).map(r=>r.length));
-    const headers=Array.from({length:width},(_,i)=>clean(head[i]));
-    const colName=i=>{let n=i+1,out='';while(n){n--;out=String.fromCharCode(65+n%26)+out;n=Math.floor(n/26);}return out;};
-    const options=headers.map((h,i)=>'<option value="' + i + '">' + esc(colName(i) +
-      ' · ' + (h||'Колонка '+(i+1))) + '</option>').join('');
-    $('#mapId').innerHTML=options;$('#mapName').innerHTML=options;
-    const h=headers.map(s=>normalized(s).replace(/[\s_–-]+/g,''));
-    const aliasesId=['id','productid','idтовара','wpid','postid','идтовара'];
-    const aliasesName=['name','title','название','названиеигры','игра','productname','товар','game'];
-    let id=h.findIndex(x=>aliasesId.includes(x));
-    let title=h.findIndex(x=>aliasesName.includes(x));
-    if (id<0)id=1;
-    if (title<0)title=id===0?1:0;
-    $('#mapId').value=String(id);
-    $('#mapName').value=String(title);
-    $('#startRow').value=String(h.some(x=>aliasesId.includes(x)||aliasesName.includes(x))?2:1);
-    preview();
+    if(!book)return;
+    const col=linkColumn();
+    $('#linkColumn').textContent=col<0?'Колонка product_link не найдена в первой строке.':
+      'Найдена колонка product_link (№ '+(col+1)+').';
+    $('#load').disabled=col<0;
+    const rows=sheetRows();
+    $('#preview').textContent=col<0?'В первой строке должен быть заголовок product_link.':
+      rows.slice(1).map((r,i)=>clean(linkCell(rows,i+1,col))).filter(Boolean).slice(0,5).join('\n')||
+      'Нет ссылок.';
   }
-  function preview() {
-    if (!book)return;
-    const rows=sheetRows(),from=Math.max(1,Number($('#startRow').value)||1);
-    const id=Number($('#mapId').value),title=Number($('#mapName').value);
-    const sample=rows.slice(from-1).filter(x=>clean(x[id])||clean(x[title])).slice(0,5);
-    $('#preview').textContent=sample.map((row,i)=>clean(row[id])+' · '+clean(row[title])).join('\n') ||
-      'Нет заполненных строк.';
-  }
+  function preview(){fillMapping();}
+
   async function readExcel(file) {
     if (!file || !canEdit()) return;
     try {
@@ -452,50 +445,41 @@
       setTab('import');
     } catch (e) {toast('Не удалось прочитать Excel: '+e.message);}
   }
-  function importQueue() {
-    if (!book||!canEdit())return;
-    const idCol=Number($('#mapId').value),nameCol=Number($('#mapName').value);
-    if (idCol===nameCol)return toast('Колонка ID и названия должны отличаться.');
-    const from=Math.max(1,Number($('#startRow').value)||1), data=sheetRows();
+  function importQueue(){
+    if(!book||!canEdit())return;
+    const data=sheetRows(),col=linkColumn();
+    if(col<0)return toast('В первой строке Excel нужен столбец product_link.');
     const seen=new Set(),rows=[];
-    data.forEach((cells,i)=>{
-      if (i<from-1)return;
-      const id=clean(cells[idCol]),name=clean(cells[nameCol]);
-      if (!id&&!name)return;
-      const row={excelRow:i+1,id,name,status:'pending',message:'',foundName:'',wpPostId:'',finished:''};
-      if (!idValid(id)) {
-        row.status='skipped';row.message='Некорректный числовой WordPress ID.';
-      } else if (seen.has(id)) {
-        row.status='skipped';row.message='Повтор ID в Excel — удаление дубликата не выполняется.';
-      } else seen.add(id);
+    for(let i=1;i<data.length;i++){
+      const raw=clean(linkCell(data,i,col));
+      if(!raw)continue;
+      const row={excelRow:i+1,productLink:raw,id:'',name:'',status:'pending',
+        message:'',foundName:'',wpPostId:'',finished:''};
+      try{
+        const p=parseProductLink(raw);
+        row.productLink=p.url;row.id=p.id;
+        if(seen.has(row.id))throw new Error('Дубликат product_link с ID '+row.id+'.');
+        seen.add(row.id);
+      }catch(e){row.status='skipped';row.message=e.message;}
       rows.push(row);
-    });
-    if (!rows.length)return toast('Не найдено строк с товарами.');
-    const valid=rows.filter(r=>r.status==='pending').length;
-    if (!valid)return toast('Нет корректных ID товаров.');
-    if (state.rows.length && !confirm('Заменить существующую очередь для ' + DOMAIN +
-      '?\nСначала можно сохранить старый отчёт.'))return;
-    state=defaults();
-    state.filename=fileName;state.sheet=book.SheetNames[Number($('#sheet').value)];
-    state.rows=rows;
-    log('info','Импорт: '+fileName+', '+rows.length+' строк, '+valid+' ID к обработке, '+
-      (rows.length-valid)+' пропущено.');
-    setTab('queue');
-    if (!isList()) {
-      log('info','После импорта открываем список товаров: '+LIST);
-      location.assign(LIST);
     }
+    if(!rows.length)return toast('В product_link нет ссылок.');
+    const good=rows.filter(r=>r.status==='pending').length;
+    if(!good)return toast('Нет корректных ссылок на редактор товаров этого сайта.');
+    if(state.rows.length&&!confirm('Заменить прежнюю очередь для '+DOMAIN+'? Вы можете сначала скачать отчёт.'))return;
+    state=defaults();state.filename=fileName;state.sheet=book.SheetNames[Number($('#sheet').value)];state.rows=rows;
+    log('info','Импорт '+fileName+': '+rows.length+' ссылок, к обработке '+good+', пропущено '+(rows.length-good)+'.');
+    setTab('queue');
   }
-  function report() {
-    if (!state.rows.length)return toast('Пустая очередь.');
-    if (typeof XLSX==='undefined')return toast('Библиотека XLSX недоступна.');
-    const columns=['Строка Excel','ID товара','Название из Excel','Название на сайте',
-      'WP post ID','Статус','Комментарий','Завершено'];
-    const line=r=>[r.excelRow,r.id,r.name,r.foundName,r.wpPostId,labels[r.status]||r.status,r.message,r.finished];
+  function report(){
+    if(!state.rows.length)return toast('Очередь пуста.');
+    if(typeof XLSX==='undefined')return toast('Библиотека XLSX недоступна.');
+    const cols=['Строка Excel','product_link','ID из ссылки','Название на сайте','Статус','Комментарий','Завершено'];
+    const line=r=>[r.excelRow,r.productLink,r.id,r.foundName,labels[r.status]||r.status,r.message,r.finished];
     const wb=XLSX.utils.book_new();
-    const add=(name,data)=>{
-      const ws=XLSX.utils.aoa_to_sheet([columns,...data.map(line)]);
-      ws['!cols']=[{wch:13},{wch:20},{wch:48},{wch:48},{wch:18},{wch:22},{wch:90},{wch:25}];
+    const add=(name,rows)=>{
+      const ws=XLSX.utils.aoa_to_sheet([cols,...rows.map(line)]);
+      ws['!cols']=[{wch:13},{wch:100},{wch:18},{wch:50},{wch:24},{wch:105},{wch:25}];
       XLSX.utils.book_append_sheet(wb,ws,name);
     };
     add('Все товары',state.rows);
@@ -503,13 +487,13 @@
     add('Не найдено',state.rows.filter(r=>r.status==='not_found'));
     add('Ошибки удаления',state.rows.filter(r=>r.status==='failed'));
     add('Пропущено',state.rows.filter(r=>r.status==='skipped'));
-    const logSheet=XLSX.utils.aoa_to_sheet([['Время','Уровень','ID','Строка','Сообщение'],
+    const ws=XLSX.utils.aoa_to_sheet([['Время','Уровень','ID','Строка','Сообщение'],
       ...state.logs.map(x=>[x.time,x.level,x.id,x.row,x.message])]);
-    logSheet['!cols']=[{wch:25},{wch:13},{wch:20},{wch:14},{wch:100}];
-    XLSX.utils.book_append_sheet(wb,logSheet,'Журнал');
+    ws['!cols']=[{wch:26},{wch:14},{wch:20},{wch:14},{wch:100}];
+    XLSX.utils.book_append_sheet(wb,ws,'Журнал');
     const safe=(state.filename||'products').replace(/\.(xlsx|xls|csv)$/i,'').replace(/[\\/:*?"<>|]/g,'_');
     XLSX.writeFile(wb,safe+'_'+DOMAIN+'_trash_result.xlsx');
-    log('info','XLSX-отчёт сформирован.');
+    log('info','Отчёт по ссылкам product_link скачан.');
   }
   function downloadLog() {
     const text=state.logs.map(x=>[new Date(x.time).toLocaleString('ru-RU'),x.level,
