@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SteamBuy — Product Trash Manager
 // @namespace    https://steambuy.pro/
-// @version      2.0.3
+// @version      2.0.4
 // @description  Excel → поиск товара по ID в WordPress → Trash → следующий; очередь, журнал, отдельные списки ошибок, 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -24,7 +24,7 @@
 (() => {
   'use strict';
   // Version 2 uses a new queue key: old running 1.x jobs cannot trigger deletions after upgrade.
-  const VERSION = '2.0.3';
+  const VERSION = '2.0.4';
   const DOMAIN = location.hostname;
   const PREFIX = 'sb-product-trash-v2:' + DOMAIN;
   const KEY = PREFIX + ':state';
@@ -417,6 +417,14 @@
       state.phase='search';
     }
     if (state.index<0) {release();return toast('В очереди нет товаров. Загрузите новый файл.');}
+    if (state.phase==='search' && !state.rows.some(r=>['searching','deleting','verifying'].includes(r.status))) {
+      const count=state.rows.filter(r=>r.status==='pending').length;
+      const chosen=state.rows[state.index];
+      const question=one ?
+        'ТЕСТ: поместить в Trash ровно один товар?\nID: '+chosen.id+'\nНазвание: '+(chosen.name||'—') :
+        'Начать массовый перенос товаров в Trash на '+DOMAIN+'?\nОсталось ID: '+count+'\nДействие изменит товары на сайте.';
+      if (!confirm(question)) {release();return;}
+    }
     state.mode=one?'one':'batch';
     state.runCount=0;
     state.running=true;state.paused=false;state.owner=tabId;
@@ -447,7 +455,8 @@
     const data=sheetRows(),head=data[0]||[];
     const width=Math.max(2,...data.slice(0,50).map(r=>r.length));
     const headers=Array.from({length:width},(_,i)=>clean(head[i]));
-    const options=headers.map((h,i)=>'<option value="' + i + '">' + esc(String.fromCharCode(65+i) +
+    const colName=i=>{let n=i+1,out='';while(n){n--;out=String.fromCharCode(65+n%26)+out;n=Math.floor(n/26);}return out;};
+    const options=headers.map((h,i)=>'<option value="' + i + '">' + esc(colName(i) +
       ' · ' + (h||'Колонка '+(i+1))) + '</option>').join('');
     $('#mapId').innerHTML=options;$('#mapName').innerHTML=options;
     const h=headers.map(s=>normalized(s).replace(/[\s_–-]+/g,''));
