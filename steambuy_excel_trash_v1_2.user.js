@@ -1,8 +1,11 @@
 // ==UserScript==
 // @name         SteamBuy — Excel → Trash (автоочистка поиска, подвижная панель)
 // @namespace    https://steambuy.pro/
-// @version      1.2.0
-// @description  Полный цикл: очистить поиск → ввести следующую игру → Search products → сверить → Trash → дальше. Перемещение и изменение размера панели.
+// @version      1.3.1
+// @description  Поиск только по ID из Excel; проверка названия перед Trash; цикл, отчёт, подвижная панель и обновление через GitHub.
+// @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
+// @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
+// @downloadURL  https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
 // @match        https://steambuy.pro/wp-admin/*
 // @noframes
 // @require      https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js
@@ -25,6 +28,11 @@
   const WAIT = 'Ожидает';
   let imported = null;
   let state = GM_getValue(KEY, null);
+  // Очереди старых версий тоже переключаются на поиск по ID.
+  if (state && state.searchBy !== 'id') {
+    state.searchBy = 'id';
+    GM_setValue(KEY, state);
+  }
   let scheduled = false;
   let busy = false;
 
@@ -46,8 +54,9 @@
     return;
   }
 
+  // В поиск WordPress вводится исключительно ID из Excel. Название — только для проверки перед Trash.
   function queryFor(item) {
-    return state?.searchBy === 'name' ? item.name : item.id;
+    return item.id;
   }
 
   const norm = value => String(value ?? '')
@@ -268,10 +277,9 @@
     }
 
     if (state.candidates.length === 0) {
-      const lookup = state.searchBy === 'name' ? 'названию' : 'ID';
       const note = state.resultCount
-        ? `По ${lookup} найдено ${state.resultCount} строк, но нет точного совпадения названия. Примеры: ${state.previewNames.join(' | ')}`
-        : `По ${lookup} товары не найдены.`;
+        ? `По ID ${item.id} найдено ${state.resultCount} строк, но ни у одной нет точного совпадения названия с Excel. Примеры: ${state.previewNames.join(' | ')}`
+        : `По ID ${item.id} товары не найдены.`;
       return mark(state.resultCount ? 'Название не совпало' : 'Не найдено', note);
     }
 
@@ -439,6 +447,9 @@
         overflow:auto; border:1px solid #ddd; background:#f6f7f7; border-radius:5px;
         padding:8px; font:12px/1.4 monospace; }
       #sbp-panel .sbp-subtle { color:#646970; font-size:12px; }
+      #sbp-panel .sbp-github { margin:7px 0 12px; display:flex; flex-wrap:wrap; gap:6px 12px; align-items:center; }
+      #sbp-panel .sbp-github a { color:#2271b1; text-decoration:underline; font-weight:600; }
+      #sbp-panel .sbp-github a:hover { color:#135e96; }
       #sbp-panel #sbp-message { margin-top:9px; color:#135e96; overflow-wrap:anywhere; }
       #sbp-panel #sbp-status { margin-top:10px; white-space:pre-line; background:#f0f6fc; padding:9px; border-radius:5px; }
     </style>
@@ -448,7 +459,12 @@
       <button id="sbp-collapse" type="button" title="Свернуть / развернуть">−</button></span>
     </div>
     <div id="sbp-body">
-    <div class="sbp-subtle">v1.2 · Перетащите панель за заголовок. Измените размер за нижний правый угол.</div>
+    <div class="sbp-subtle">v1.3.1 · Поиск только по ID из Excel. Перетащите панель за заголовок.</div>
+    <div class="sbp-github">
+      <span class="sbp-subtle">Автообновления через Tampermonkey</span>
+      <a href="https://github.com/blackowl0192/script_folder/edit/main/steambuy_excel_trash_v1_2.user.js" target="_blank" rel="noopener noreferrer" title="Открыть редактор файла в GitHub">✎ Редактировать в GitHub</a>
+      <a href="https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js" target="_blank" rel="noopener noreferrer">Посмотреть код</a>
+    </div>
     <div class="sbp-subtle">Удаление только при точном совпадении названия. Товары попадают в корзину.</div>
     <label for="sbp-file">Excel-файл (.xlsx, .xls, .csv)</label>
     <input id="sbp-file" type="file" accept=".xlsx,.xls,.csv" />
@@ -457,11 +473,7 @@
       <div><label for="sbp-name-col">Колонка названия</label><select id="sbp-name-col"></select></div>
       <div><label for="sbp-id-col">Колонка ID</label><select id="sbp-id-col"></select></div>
     </div>
-    <label for="sbp-search-mode">Что вводить в поиск WordPress</label>
-    <select id="sbp-search-mode">
-      <option value="name">Название игры (по умолчанию)</option>
-      <option value="id">ID из Excel</option>
-    </select>
+    <div class="sbp-subtle">В поле Search products вводится <b>ID из Excel</b>. Название игры используется только для сверки перед переносом в Trash.</div>
     <label for="sbp-start-row">Первая строка с игрой (1 или 2)</label>
     <input id="sbp-start-row" type="number" min="1" value="2" />
     <label>Предпросмотр</label><div id="sbp-preview">Выберите файл для загрузки.</div>
@@ -472,7 +484,8 @@
       <button id="sbp-reset" class="danger">Сбросить</button>
     </div>
     <div id="sbp-status"></div><div id="sbp-message"></div>
-    <div class="sbp-subtle" style="margin-top:9px">Автоматически: очистка → новая игра → Search products → сверка → Trash. При перезагрузке прогресс сохраняется.</div>
+    <div class="sbp-subtle" style="margin-top:9px">Автоматически: очистка поля → следующий ID → Search products → сверка названия → Trash. При перезагрузке прогресс сохраняется.</div>
+    <div class="sbp-subtle" style="margin-top:7px">При редактировании кода в GitHub увеличивайте @version (например, до 1.3.2), чтобы Tampermonkey обнаружил обновление.</div>
     </div>
   `;
   document.body.appendChild(panel);
@@ -491,10 +504,10 @@
     if (Number.isFinite(layout.width)) panel.style.width = `${layout.width}px`;
     if (Number.isFinite(layout.height)) panel.style.height = `${layout.height}px`;
     if (Number.isFinite(layout.left)) {
-      panel.style.left = `${Math.max(0, Math.min(layout.left, innerWidth - 65))}px`;
+      panel.style.left = `${Math.max(0, Math.min(layout.left, innerWidth - panel.getBoundingClientRect().width - 6))}px`;
       panel.style.right = 'auto';
     }
-    if (Number.isFinite(layout.top)) panel.style.top = `${Math.max(0, Math.min(layout.top, innerHeight - 45))}px`;
+    if (Number.isFinite(layout.top)) panel.style.top = `${Math.max(0, Math.min(layout.top, innerHeight - panel.getBoundingClientRect().height - 6))}px`;
     if (layout.collapsed) {
       panel.classList.add('sbp-collapsed');
       collapsedButton.textContent = '+';
@@ -514,8 +527,8 @@
   });
   drag.addEventListener('pointermove', event => {
     if (!dragging) return;
-    const left = Math.max(0, Math.min(innerWidth - 70, dragging.left + event.clientX - dragging.x));
-    const top = Math.max(0, Math.min(innerHeight - 45, dragging.top + event.clientY - dragging.y));
+    const left = Math.max(0, Math.min(innerWidth - panel.getBoundingClientRect().width - 6, dragging.left + event.clientX - dragging.x));
+    const top = Math.max(0, Math.min(innerHeight - panel.getBoundingClientRect().height - 6, dragging.top + event.clientY - dragging.y));
     panel.style.left = `${left}px`;
     panel.style.top = `${top}px`;
   });
@@ -556,7 +569,6 @@
   const sheetSelect = $('#sbp-sheet');
   const nameSelect = $('#sbp-name-col');
   const idSelect = $('#sbp-id-col');
-  const searchModeSelect = $('#sbp-search-mode');
   const startRowInput = $('#sbp-start-row');
   const preview = $('#sbp-preview');
 
@@ -674,12 +686,12 @@
     }
     const ready = items.filter(item => item.status === WAIT).length;
     if (!ready) return setMessage('Нет записей для поиска: проверьте ID и названия.');
-    const searchDescription = searchModeSelect.value === 'name' ? 'по названию игры' : 'по ID из Excel';
+    const searchDescription = 'по ID из Excel';
     if (!confirm(`Файл: ${imported.fileName}\nИгр в таблице: ${items.length}\nК поиску и переносу в Trash: ${ready}\nСпособ поиска: ${searchDescription}\n\nПосле каждого Trash скрипт автоматически проверит результат и перейдёт к следующей игре. Удаляется только товар с точно совпавшим названием.\n\nПродолжить?`)) return;
 
     state = {
       fileName: imported.fileName, sheetName: sheetSelect.value,
-      originalRows: rows, startRow, nameCol, idCol, searchBy: searchModeSelect.value,
+      originalRows: rows, startRow, nameCol, idCol, searchBy: 'id',
       items, index: 0, running: true, phase: 'search',
       page: 0, candidates: [], previewNames: [], resultCount: 0, pendingPostId: '',
       searchAttempts: 0,
@@ -771,7 +783,7 @@
     const current = state.items[state.index];
     status.textContent = [
       `${state.running ? '▶ Обработка' : 'Ⅱ Пауза / готово'} · ${processed}/${state.items.length}`,
-      `Поиск: ${state.searchBy === 'name' ? 'по названию' : 'по ID'}`,
+      `Поиск: только по ID из Excel`,
       `Текущая игра: ${current ? `${current.name} [${current.id}]` : '—'}`,
       ...Object.entries(counts).map(([key, count]) => `${key}: ${count}`)
     ].join('\n');
