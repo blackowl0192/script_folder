@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tutor LMS — Редактирует курсы, и преподавателей
 // @namespace    yourcourse.local.tools
-// @version      1.2.3
+// @version      1.2.4
 // @description  Excel → Tutor LMS на 6 сайтах: курсы, преподаватели, фото, Bio, проверки, отдельные очереди по доменам.
 // @match        https://yourcourse.shop/wp-admin/*
 // @match        https://yourcourse.shop/wp-login.php*
