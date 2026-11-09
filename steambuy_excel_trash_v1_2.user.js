@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SteamBuy — Product Trash Manager
 // @namespace    https://steambuy.pro/
-// @version      2.0.1
+// @version      2.0.2
 // @description  Excel → поиск товара по ID в WordPress → Trash → следующий; очередь, журнал, отдельные списки ошибок, 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -24,7 +24,7 @@
 (() => {
   'use strict';
   // Version 2 uses a new queue key: old running 1.x jobs cannot trigger deletions after upgrade.
-  const VERSION = '2.0.1';
+  const VERSION = '2.0.2';
   const DOMAIN = location.hostname;
   const PREFIX = 'sb-product-trash-v2:' + DOMAIN;
   const KEY = PREFIX + ':state';
@@ -501,6 +501,10 @@
     log('info','Импорт: '+fileName+', '+rows.length+' строк, '+valid+' ID к обработке, '+
       (rows.length-valid)+' пропущено.');
     setTab('queue');
+    if (!isList()) {
+      log('info','После импорта открываем список товаров: '+LIST);
+      location.assign(LIST);
+    }
   }
   function report() {
     if (!state.rows.length)return toast('Пустая очередь.');
@@ -584,7 +588,7 @@
       '<option value="done">Удалены</option><option value="skipped">Пропущено</option></select></div><div id="rows"></div></div>'+
       '<div class="view hidden" id="not_found"><div id="missingRows"></div></div>'+
       '<div class="view hidden" id="failed"><div id="failedRows"></div></div>'+
-      '<div class="view hidden" id="log"><div class="tools"><button id="downloadLog">↓ Скачать журнал TXT</button></div><div id="logs"></div></div>'+
+      '<div class="view hidden" id="log"><div class="tools"><button id="downloadLog">↓ Скачать журнал TXT</button><span class="hint">Последние 1500 событий</span></div><div id="logs"></div></div>'+
       '<div class="view hidden" id="import"><div class="tools"><button class="danger" id="reset">Сбросить очередь и журнал</button></div>'+
       '<div class="drop" id="drop"><label for="file">Выбрать Excel / CSV</label><input type="file" id="file" accept=".xlsx,.xls,.csv" hidden>'+
       '<small>Или перетащите файл сюда</small><small id="filename">Файл не выбран</small></div>'+
