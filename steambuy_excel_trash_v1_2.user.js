@@ -612,7 +612,13 @@
     if(state.rows.length&&!confirm('Заменить прежнюю очередь для '+DOMAIN+'? Вы можете сначала скачать отчёт.'))return;
     const chosenAction=state.action;
     state=defaults();state.action=chosenAction;state.filename=fileName;state.sheet=book.SheetNames[Number($('#sheet').value)];state.rows=rows;
-    log('info','Импорт '+fileName+': '+rows.length+' ссылок, к обработке '+good+', пропущено '+(rows.length-good)+'.');
+    for(const r of rows){
+      if(r.status!=='skipped')continue;
+      state.logs.push({time:now(),level:'warn',id:r.id,row:r.excelRow,
+        message:'Пропуск ссылки '+r.productLink+': '+r.message});
+    }
+    if(state.logs.length>MAX_LOGS)state.logs.splice(0,state.logs.length-MAX_LOGS);
+    log('info','Импорт '+fileName+': '+rows.length+' ссылок, к обработке '+good+', пропущено '+(rows.length-good)+'. Действие: '+actionName(state.action)+'.');
     setTab('queue');
   }
   function report(){
