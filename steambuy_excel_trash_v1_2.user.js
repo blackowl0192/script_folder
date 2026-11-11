@@ -260,6 +260,94 @@
       u.searchParams.get('action')!=='trash'||!u.searchParams.get('_wpnonce'))return null;
     return u.href;
   }
+  // WordPress Classic Editor: Edit visibility -> Private -> OK -> Update.
+  function makePrivate(row,status) {
+    if(status==='private')
+      return finalize(row,'done','Товар уже приватный. Update не требуется.');
+    const edit=document.querySelector('a.edit-visibility[href="#visibility"]');
+    const radio=document.querySelector('#visibility-radio-private');
+    const ok=document.querySelector('a.save-post-visibility[href="#visibility"]');
+    const update=document.querySelector('#publish');
+    const missing=[];
+    if(!edit)missing.push('Edit visibility');
+    if(!radio)missing.push('#visibility-radio-private');
+    if(!ok)missing.push('OK / save-post-visibility');
+    if(!update)missing.push('Update / #publish');
+    if(missing.length)return finalize(row,'failed',
+      'Редактор открыт, но не найдены элементы приватности: '+missing.join(', ')+'.');
+    if(update.disabled)return finalize(row,'failed','Кнопка Update недоступна (disabled).');
+    try{
+      log('info','ID '+row.id+': открываем Edit visibility.',row);
+      edit.click();
+      radio.click(); // Triggers native input/change listeners for Classic Editor.
+      if(!radio.checked)throw new Error('Не удалось выбрать radio Private.');
+      ok.click();
+      if(!radio.checked)throw new Error('После OK переключатель Private не выбран.');
+    }catch(e){
+      return finalize(row,'failed','Не удалось выбрать Private → OK: '+(e.message||e));
+    }
+    // Persist BEFORE Update: after a page reload, only verification is permitted.
+    state.phase='verify-private';
+    state.pending={id:row.id,action:'private',at:now()};
+    row.status='saving';
+    row.message='Private выбран и подтверждён через OK; выполняется Update.';
+    log('info','ID '+row.id+': выбран Private, подтверждено OK. Нажимаем Update.',row);
+    try{
+      update.click();
+    }catch(e){
+      return finalize(row,'failed','Не удалось нажать Update: '+(e.message||e)+
+        '. Повторный Update автоматически не выполняется.');
+    }
+    // If an on-page handler suppressed navigation, verify server-side without submitting again.
+    setTimeout(()=>{
+      if(state.running&&ownLease()&&current()?.id===row.id&&
+        state.phase==='verify-private'&&!busy&&!moving)verifyPrivate(row);
+    },4500);
+  }
+  async function verifyPrivate(row) {
+    if(busy)return;
+    busy=true;
+    row.status='verifying';
+    row.message='Проверка статуса Private после Update (без повторного сохранения).';
+    persist();
+    try{
+      // Fetch a fresh WordPress editor response; current page may still contain unsaved changes.
+      for(let attempt=1;attempt<=3;attempt++){
+        const doc=await fetchAdmin(row.productLink);
+        const error=doc.querySelector('.wp-die-message');
+        if(error)throw new Error('WordPress вернул ошибку: '+clean(error.textContent).slice(0,180));
+        const id=clean(doc.querySelector('#post_ID,input[name="post_ID"]')?.value);
+        const type=clean(doc.querySelector('#post_type,input[name="post_type"]')?.value)||
+          (doc.body?.classList.contains('post-type-product')?'product':'');
+        const savedStatus=clean(doc.querySelector('#post_status,input[name="post_status"]')?.value)||
+          clean(doc.querySelector('#original_post_status,input[name="original_post_status"]')?.value);
+        if(id!==row.id || type!=='product'){
+          throw new Error('Не удалось удостовериться в ID/типе товара после Update. Получено ID='+
+            (id||'—')+', тип='+(type||'—')+'.');
+        }
+        if(savedStatus==='private'){
+          return finalize(row,'done','Товар ID '+row.id+' успешно сохранён как Private.');
+        }
+        if(attempt<3){
+          log('warn','ID '+row.id+': статус после Update = '+(savedStatus||'неизвестен')+
+            '. Повторная проверка без нажатия Update.',row);
+          await delay(1100);
+        }else{
+          return finalize(row,'failed','Private не подтверждён после Update. Текущий статус: '+
+            (savedStatus||'неизвестен')+'. Повторный Update автоматически не выполняется.');
+        }
+      }
+    }catch(e){
+      finalize(row,'failed','Ошибка проверки приватности ID '+row.id+': '+(e.message||e)+
+        '. Повторного Update не будет.');
+      if(/сессия|войти|авторизац/i.test(e.message||'')){
+        state.running=false;state.paused=true;persist();release();
+      }
+    }finally{
+      busy=false;
+      if(state.running)schedule(Math.max(700,Number(state.settings.delay)*1000));
+    }
+  }
   function openProduct(row) {
     // Action is fixed for the row once processing starts, regardless of UI changes.
     if(!['trash','private'].includes(row.action)) row.action=state.action;
