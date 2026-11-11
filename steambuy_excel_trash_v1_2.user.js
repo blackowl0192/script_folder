@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SteamBuy — Product Trash Manager
+// @name         Product Manager — Trash / Private
 // @namespace    https://steambuy.pro/
-// @version      2.1.0
-// @description  Excel product_link → открыть редактор → Move to Trash → следующий; лог и отчёты, 7 сайтов.
+// @version      2.2.0
+// @description  Excel product_link → выбрать действие Trash или Private → открыть товар → применить → проверить; 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
 // @downloadURL  https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -30,8 +30,8 @@
 
 (() => {
   'use strict';
-  // Version 2 uses a new queue key: old running 1.x jobs cannot trigger deletions after upgrade.
-  const VERSION = '2.1.0';
+  // Keep v3 queues, but require explicit action selection after upgrading to v2.2.
+  const VERSION = '2.2.0';
   const DOMAIN = location.hostname;
   const PREFIX = 'sb-product-trash-v3:' + DOMAIN;
   const OLD_LEASE = 'sb-product-trash-v2:' + DOMAIN + ':lease';
@@ -57,21 +57,40 @@
   const tabId = sessionStorage.getItem(TAB) || (Date.now().toString(36) + Math.random().toString(36).slice(2));
   sessionStorage.setItem(TAB, tabId);
   const defaults = () => ({
-    v: 3, filename: '', sheet: '', rows: [], logs: [], index: -1,
+    v: 3, schema: 2, action: '', filename: '', sheet: '', rows: [], logs: [], index: -1,
     phase: 'idle', running: false, paused: false, mode: 'batch', runCount: 0,
     owner: '', pending: null,
     settings: { delay: 2, stopOnError: false }, updated: '', started: ''
   });
   let state = GM_getValue(KEY, null) || defaults();
   if (state.v !== 3 || !Array.isArray(state.rows)) state = defaults();
-  state.settings = Object.assign({delay: 2, stopOnError: false}, state.settings || {});
+  state.settings = Object.assign({delay: 2}, state.settings || {});
+  // Older v2.1 runs were delete-only. Pause on upgrade rather than silently continuing Trash.
+  if(state.schema !== 2){
+    const currentRow=state.rows[state.index];
+    const trashPending=!!(state.pending && currentRow &&
+      ['verify','verifying','deleting'].includes(state.phase));
+    state.running=false;state.paused=!!state.rows.length;
+    state.action=trashPending?'trash':'';
+    if(trashPending) currentRow.action='trash';
+    else state.started='';
+    state.schema=2;
+    state.logs.push({time:new Date().toISOString(),level:'warn',id:currentRow?.id||'',
+      row:currentRow?.excelRow||'',message:'Обновление v2.2: автоматическая работа приостановлена. Выберите действие перед продолжением.'});
+    GM_setValue(KEY,state);
+  }
   let root, panel, book = null, fileName = '';
   let activeTab = 'queue', filter = 'all', search = '', page = 0;
   let busy = false, moving = false, timer = null, heartbeat = null, expanded = false, dragging = null;
-  const labels = {pending:'Ожидает', opening:'Открытие', deleting:'Удаляется', verifying:'Проверка',
-    done:'Удалён', not_found:'Не найден', failed:'Ошибка удаления', skipped:'Пропущен'};
+  const labels = {pending:'Ожидает', opening:'Открытие', deleting:'Удаляется',
+    saving:'Сохранение', verifying:'Проверка',done:'Выполнено',
+    not_found:'Не найден', failed:'Ошибка обработки', skipped:'Пропущен'};
+  const ACTION_LABELS = {trash:'Переместить в Trash', private:'Сделать приватным'};
+  const actionName = action => ACTION_LABELS[action] || 'Не выбрано';
+  const rowLabel = r => r.status==='done'
+    ? (r.action==='private'?'Приватный':'Удалён') : (labels[r.status]||r.status);
   const statuses = {done:'done', failed:'bad', not_found:'bad', skipped:'neutral',
-    opening:'work', deleting:'work', verifying:'work', pending:'neutral'};
+    opening:'work', deleting:'work', saving:'work', verifying:'work', pending:'neutral'};
   function persist() {
     state.updated = now();
     GM_setValue(KEY, state);
@@ -195,13 +214,6 @@
       release();
       return;
     }
-    if (status !== 'done' && status !== 'not_found' && state.settings.stopOnError) {
-      state.running = false;
-      state.paused = true;
-      log('error','Обработка остановлена согласно настройке «Пауза при ошибке».',row);
-      release();
-      return;
-    }
     if (nextPending() < 0) {
       state.running = false;
       state.paused = false;
@@ -249,6 +261,9 @@
     return u.href;
   }
   function openProduct(row) {
+    // Action is fixed for the row once processing starts, regardless of UI changes.
+    if(!['trash','private'].includes(row.action)) row.action=state.action;
+    if(!['trash','private'].includes(row.action))return failFatal('Выберите действие перед запуском.',row);
     if(!isProductEditor(row)){
       row.openAttempts=(row.openAttempts||0)+1;
       if(row.openAttempts>2)return finalize(row,'not_found',
@@ -275,7 +290,11 @@
     row.wpPostId=actualId;
     row.foundName=clean(document.querySelector('#title,input[name="post_title"]')?.value)||
       clean(document.querySelector('.editor-post-title__input')?.textContent)||'';
-    if(status==='trash')return finalize(row,'done','Товар уже находится в корзине.');
+    if(status==='trash') {
+      if(row.action==='trash')return finalize(row,'done','Товар уже находится в корзине.');
+      return finalize(row,'failed','Нельзя сделать приватным товар, который уже находится в корзине.');
+    }
+    if(row.action==='private')return makePrivate(row,status);
     const anchor=document.querySelector('#delete-action a.submitdelete.deletion')||
       document.querySelector('#delete-action a.submitdelete');
     const link=safeTrashLink(anchor,row);
@@ -284,7 +303,8 @@
     state.phase='verify';state.pending={id:row.id,href:link,at:now()};
     row.status='deleting';row.message='Нажимаем Move to Trash, затем проверяем.';
     log('info','Товар '+(row.foundName||'без названия')+' (ID '+row.id+'). Клик по Move to Trash.',row);
-    anchor.click();
+    try {anchor.click();}
+    catch(error) {return finalize(row,'failed','Ошибка нажатия Move to Trash: '+(error.message||error));}
     // WordPress normally navigates. If an interceptor blocks navigation, verify without re-clicking.
     setTimeout(()=>{
       if(state.running&&ownLease()&&current()?.id===row.id&&state.phase==='verify'&&!busy&&!moving)
@@ -375,9 +395,13 @@
     if(!row||TERMINAL.has(row.status)){
       state.index=-1;state.phase='idle';persist();return schedule();
     }
-    if(['verify','verifying','deleting'].includes(state.phase)){
+    if(['verify','verifying','deleting','verify-trash'].includes(state.phase)){
       log('warn','Возобновление: проверка предыдущего Trash. Второго нажатия не будет.',row);
       return verifyTrash(row);
+    }
+    if(['verify-private','saving'].includes(state.phase)){
+      log('warn','Возобновление: проверяем сохранённую приватность без повторного Update.',row);
+      return verifyPrivate(row);
     }
     state.phase='open';openProduct(row);
   }
@@ -385,25 +409,30 @@
     if(busy||moving)return toast('Дождитесь завершения текущего действия.');
     readState();
     if(!state.rows.length)return toast('Сначала загрузите Excel со столбцом product_link.');
+    const pendingAction=state.pending?.action || (state.pending && ['verify','verifying','deleting'].includes(state.phase)?'trash':'');
+    const selected=clean(state.action);
+    if(!['trash','private'].includes(selected)&&!pendingAction)return toast('Сначала выберите действие: Trash или Private.');
     if(!claim())return;
     const ongoing=state.index>=0&&!!current()&&!TERMINAL.has(current().status);
     if(!ongoing){state.index=nextPending();state.phase='open';}
     if(state.index<0){release();return toast('Все ссылки обработаны. Загрузите новый Excel.');}
     const row=current();
+    if(pendingAction && !row.action)row.action=pendingAction;
     if(row.status==='pending'&&state.phase==='open'){
       const count=state.rows.filter(r=>r.status==='pending').length;
+      const action=actionName(state.action);
       if(!confirm(one?
-        'ТЕСТ: переместить ровно один товар в Trash?\n'+row.productLink+
-        '\n\nЭто реальное перемещение в корзину.' :
-        'Начать массовое перемещение товаров в Trash?\nСайт: '+DOMAIN+
+        'ТЕСТ: обработать один товар?\nДействие: '+action+'\n'+row.productLink :
+        'Запустить обработку товаров?\nСайт: '+DOMAIN+'\nДействие: '+action+
         '\nОсталось ссылок: '+count)){
         release();return;
       }
     }
     state.mode=one?'one':'batch';
-    state.runCount=0;state.running=true;state.paused=false;state.owner=tabId;
+    state.runCount=0;
+    if(!row.action)row.action=state.action;state.running=true;state.paused=false;state.owner=tabId;
     if(!state.started)state.started=now();
-    log('info',(one?'Тест одной ссылки':'Массовая обработка product_link')+' запущен.',row);
+    log('info',(one?'Тест одной ссылки':'Массовая обработка product_link')+' запущен. Действие: '+actionName(row.action)+'.',row);
     schedule();
   }
 
@@ -483,7 +512,8 @@
     const good=rows.filter(r=>r.status==='pending').length;
     if(!good)return toast('Нет корректных ссылок на редактор товаров этого сайта.');
     if(state.rows.length&&!confirm('Заменить прежнюю очередь для '+DOMAIN+'? Вы можете сначала скачать отчёт.'))return;
-    state=defaults();state.filename=fileName;state.sheet=book.SheetNames[Number($('#sheet').value)];state.rows=rows;
+    const chosenAction=state.action;
+    state=defaults();state.action=chosenAction;state.filename=fileName;state.sheet=book.SheetNames[Number($('#sheet').value)];state.rows=rows;
     log('info','Импорт '+fileName+': '+rows.length+' ссылок, к обработке '+good+', пропущено '+(rows.length-good)+'.');
     setTab('queue');
   }
