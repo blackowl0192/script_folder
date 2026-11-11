@@ -187,7 +187,15 @@
   function nextPending() { return state.rows.findIndex(r => r.status === 'pending'); }
   function schedule(ms = 80) {
     clearTimeout(timer);
-    if (state.running && !busy && !moving) timer = setTimeout(runStep,ms);
+    if (state.running && !busy && !moving) timer = setTimeout(()=>{
+      try{runStep();}
+      catch(e){
+        const row=current();
+        const message='Неожиданная ошибка скрипта: '+(e?.message||String(e));
+        if(row&&!TERMINAL.has(row.status))finalize(row,'failed',message);
+        else {log('error',message,row);state.running=false;state.paused=true;persist();release();}
+      }
+    },ms);
   }
   function pause(reason = 'Пауза по запросу пользователя') {
     clearTimeout(timer);
@@ -199,6 +207,7 @@
   function stop() { pause('Остановлено пользователем. Сохранённые результаты не потеряны.'); }
   function finalize(row, status, message) {
     if (!row) return;
+    if(!row.action && ['trash','private'].includes(state.action))row.action=state.action;
     row.status = status;
     row.message = message;
     row.finished = now();
@@ -206,7 +215,7 @@
     state.phase = 'idle';
     state.index = -1;
     state.runCount++;
-    log(status === 'done' ? 'ok' : 'error', message, row);
+    log(status === 'done' ? 'ok' : (status==='not_found'?'warn':'error'), '['+actionName(row.action)+'] '+message, row);
     if (state.mode === 'one' && state.runCount >= 1) {
       state.running = false;
       state.paused = true;
@@ -518,7 +527,8 @@
     }
     state.mode=one?'one':'batch';
     state.runCount=0;
-    if(!row.action)row.action=state.action;state.running=true;state.paused=false;state.owner=tabId;
+    if(!row.action)row.action=state.action;
+    state.running=true;state.paused=false;state.owner=tabId;
     if(!state.started)state.started=now();
     log('info',(one?'Тест одной ссылки':'Массовая обработка product_link')+' запущен. Действие: '+actionName(row.action)+'.',row);
     schedule();
@@ -608,25 +618,26 @@
   function report(){
     if(!state.rows.length)return toast('Очередь пуста.');
     if(typeof XLSX==='undefined')return toast('Библиотека XLSX недоступна.');
-    const cols=['Строка Excel','product_link','ID из ссылки','Название на сайте','Статус','Комментарий','Завершено'];
-    const line=r=>[r.excelRow,r.productLink,r.id,r.foundName,labels[r.status]||r.status,r.message,r.finished];
+    const cols=['Строка Excel','product_link','ID из ссылки','Название на сайте','Действие','Статус','Комментарий','Завершено'];
+    const line=r=>[r.excelRow,r.productLink,r.id,r.foundName,actionName(r.action||state.action),rowLabel(r),r.message,r.finished];
     const wb=XLSX.utils.book_new();
     const add=(name,rows)=>{
       const ws=XLSX.utils.aoa_to_sheet([cols,...rows.map(line)]);
-      ws['!cols']=[{wch:13},{wch:100},{wch:18},{wch:50},{wch:24},{wch:105},{wch:25}];
+      ws['!cols']=[{wch:13},{wch:100},{wch:18},{wch:50},{wch:30},{wch:24},{wch:105},{wch:25}];
       XLSX.utils.book_append_sheet(wb,ws,name);
     };
     add('Все товары',state.rows);
-    add('Удалено',state.rows.filter(r=>r.status==='done'));
+    add('Удалено',state.rows.filter(r=>r.status==='done'&&r.action!=='private'));
+    add('Приватные',state.rows.filter(r=>r.status==='done'&&r.action==='private'));
     add('Не найдено',state.rows.filter(r=>r.status==='not_found'));
-    add('Ошибки удаления',state.rows.filter(r=>r.status==='failed'));
+    add('Ошибки обработки',state.rows.filter(r=>r.status==='failed'));
     add('Пропущено',state.rows.filter(r=>r.status==='skipped'));
     const ws=XLSX.utils.aoa_to_sheet([['Время','Уровень','ID','Строка','Сообщение'],
       ...state.logs.map(x=>[x.time,x.level,x.id,x.row,x.message])]);
     ws['!cols']=[{wch:26},{wch:14},{wch:20},{wch:14},{wch:100}];
     XLSX.utils.book_append_sheet(wb,ws,'Журнал');
     const safe=(state.filename||'products').replace(/\.(xlsx|xls|csv)$/i,'').replace(/[\\/:*?"<>|]/g,'_');
-    XLSX.writeFile(wb,safe+'_'+DOMAIN+'_trash_result.xlsx');
+    XLSX.writeFile(wb,safe+'_'+DOMAIN+'_product_manager_result.xlsx');
     log('info','Отчёт по ссылкам product_link скачан.');
   }
   function downloadLog() {
