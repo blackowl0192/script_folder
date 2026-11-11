@@ -88,7 +88,7 @@
   const ACTION_LABELS = {trash:'Переместить в Trash', private:'Сделать приватным'};
   const actionName = action => ACTION_LABELS[action] || 'Не выбрано';
   const rowLabel = r => r.status==='done'
-    ? (r.action==='private'?'Приватный':'Удалён') : (labels[r.status]||r.status);
+    ? (r.action==='private'?'Приватный':'Удалён') : rowLabel(r);
   const statuses = {done:'done', failed:'bad', not_found:'bad', skipped:'neutral',
     opening:'work', deleting:'work', saving:'work', verifying:'work', pending:'neutral'};
   function persist() {
@@ -645,7 +645,7 @@
     '.head{background:#14263e;color:white;padding:16px 18px;display:flex;align-items:center;gap:12px;cursor:move;touch-action:none;user-select:none}.logo{height:36px;width:36px;background:#4275ed;display:grid;place-items:center;border-radius:10px;font-size:18px;font-weight:800}.head b{font-size:16px;letter-spacing:.2px}.head small{color:#b1c2d9;display:block;font-size:11px}.head .spacer{flex:1}.icon{background:#ffffff13;color:#fff;border-color:#ffffff22;padding:4px 9px}',
     '.body{display:flex;flex-direction:column;min-height:0;flex:1}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:14px 16px 10px}.card{border:1px solid #e4eaf2;border-radius:10px;padding:9px 12px;background:#fafbfd}.card b{display:block;font-size:21px;line-height:1.25}.card span{font-size:11px;color:#68778c}.card.done b{color:#16835e}.card.bad b{color:#bd4f39}',
     '.progress{height:5px;background:#eaf0f8;margin:0 16px;border-radius:5px;overflow:hidden}.progress i{height:100%;display:block;background:#4076ed;transition:width .3s}.current{padding:10px 16px;display:flex;gap:8px;align-items:center;color:#586b83;min-height:42px}.dot{height:8px;width:8px;background:#93a1b3;border-radius:50%;flex:none}.dot.run{background:#3974ee;box-shadow:0 0 0 4px #e5edff}.current span:last-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-    '.actions{display:flex;gap:7px;flex-wrap:wrap;padding:0 16px 12px}.primary{background:#3468df!important;border-color:#3468df!important;color:white}.danger{color:#b04439;border-color:#eabcb6;background:#fff7f6}.tabs{display:flex;gap:18px;overflow:auto;flex-shrink:0;padding:0 16px;border-bottom:1px solid #e4eaf2}.tabs button{flex-shrink:0;border:0;border-radius:0;padding:10px 0;color:#7a889a;background:none;font-size:12px}.tabs button.on{color:#265cce;border-bottom:2px solid #3468df}',
+    '.operation{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 16px 12px;padding:11px 12px;background:#f4f7fc;border:1px solid #dce6f3;border-radius:10px}.operation label{font-weight:750;font-size:12px;color:#31445c}.operation select{flex:1;min-width:200px}.operation small{flex-basis:100%;color:#6b7b92;font-size:11px}.actions{display:flex;gap:7px;flex-wrap:wrap;padding:0 16px 12px}.primary{background:#3468df!important;border-color:#3468df!important;color:white}.danger{color:#b04439;border-color:#eabcb6;background:#fff7f6}.tabs{display:flex;gap:18px;overflow:auto;flex-shrink:0;padding:0 16px;border-bottom:1px solid #e4eaf2}.tabs button{flex-shrink:0;border:0;border-radius:0;padding:10px 0;color:#7a889a;background:none;font-size:12px}.tabs button.on{color:#265cce;border-bottom:2px solid #3468df}',
     '.view{padding:12px 16px;min-height:0;flex:1;overflow:auto}.hidden{display:none!important}.tools{display:flex;gap:8px;margin-bottom:10px}input,select{border:1px solid #dce3ed;border-radius:8px;background:#fff;padding:8px;color:#22324a;min-width:0}input[type=search]{flex:1}table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px}th{text-align:left;color:#7c899b;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:8px 6px;background:#f7f9fc;position:sticky;top:0}td{padding:10px 6px;border-bottom:1px solid #edf1f6;vertical-align:top}tr.currentrow{background:#eff5ff}td .title{font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}td small{color:#8290a2;display:block;font-size:10px;overflow-wrap:anywhere}.badge{font-size:10px;padding:3px 7px;border-radius:6px;display:inline-block;white-space:nowrap;background:#eef2f7;color:#62738a}.badge.done{background:#e4f5ec;color:#147c55}.badge.bad{background:#fff0e8;color:#b24b28}.badge.work{background:#e7efff;color:#2b62ce}',
     '.foot{padding:10px 16px;border-top:1px solid #e4eaf2;display:flex;align-items:center;gap:8px;background:#fafbfd;font-size:11px;color:#7a889a}.foot span:first-child{flex:1}.foot button{padding:4px 8px;font-size:11px}.empty{text-align:center;padding:28px 16px;color:#77869b}.empty b{display:block;color:#31435c;font-size:16px;margin-bottom:6px}.drop{border:2px dashed #c4d2e9;border-radius:12px;text-align:center;padding:20px;margin:4px 0 12px;background:#f7faff}.drop.over{border-color:#3468df;background:#eaf1ff}.drop label{cursor:pointer;color:#2b63d4;font-weight:700}.drop small{display:block;margin-top:5px;color:#7b8a9e}.mapping{display:grid;grid-template-columns:120px 1fr;gap:8px;align-items:center}.mapping label{color:#61728a}.hint{font-size:12px;color:#6d7e94;margin:10px 0}.logline{display:grid;grid-template-columns:80px 80px 1fr;gap:8px;padding:8px 0;border-bottom:1px solid #edf1f6;font-size:11px;overflow-wrap:anywhere}.logline.error{color:#a83f2f}.logline.ok{color:#147c55}.logline.warn{color:#955e0d}',
     '.pill{position:fixed;right:22px;bottom:20px;border-radius:14px;background:#14263e;color:#fff;padding:12px 18px;box-shadow:0 8px 30px #0f233b40;pointer-events:auto}.pill:hover{background:#24466b;color:white}.notice{position:absolute;bottom:54px;left:16px;right:16px;z-index:8;padding:12px;background:#fff7e7;border:1px solid #e3cdab;border-radius:10px;color:#75551f;box-shadow:0 6px 20px #0002}.notice button{float:right;padding:0 6px;margin-right:5px}.help h3{font-size:13px;color:#263d5c}.help p,.help li{font-size:12px;color:#61728a}.help ol{padding-left:20px}.setting{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #edf1f6}.setting input[type=number]{width:80px}.setting small{display:block;color:#7a899c}',
@@ -658,32 +658,37 @@
     document.documentElement.append(host);
     root=host.attachShadow({mode:'open'});
     root.innerHTML='<style>'+CSS+'</style>'+
-      '<button class="pill hidden" id="pill">Product Trash · открыть</button>'+
+      '<button class="pill hidden" id="pill">Product Manager · открыть</button>'+
       '<section class="panel" id="panel"><header class="head" id="drag">'+
-      '<div class="logo">T</div><div><b>Product Trash Manager</b><small>'+esc(DOMAIN)+' · WooCommerce · v'+VERSION+'</small></div>'+
+      '<div class="logo">P</div><div><b>Product Manager</b><small>'+esc(DOMAIN)+' · Trash / Private · v'+VERSION+'</small></div>'+
       '<span class="spacer"></span><button class="icon" id="full" title="На весь экран">⛶</button>'+
       '<button class="icon" id="min" title="Свернуть">—</button></header>'+
       '<div class="body"><div class="stats">'+
       '<div class="card"><b id="total">0</b><span>Товаров в файле</span></div>'+
-      '<div class="card done"><b id="done">0</b><span>Удалено</span></div>'+
+      '<div class="card done"><b id="done">0</b><span id="doneLabel">Выполнено</span></div>'+
       '<div class="card bad"><b id="missing">0</b><span>Не найдено</span></div>'+
       '<div class="card bad"><b id="errors">0</b><span>Ошибки</span></div></div>'+
       '<div class="progress"><i id="bar"></i></div>'+
       '<div class="current"><i class="dot" id="dot"></i><span id="current">Загрузите Excel с товарами</span></div>'+
+      '<div class="operation"><label for="operation">Действие с товарами</label>'+
+      '<select id="operation"><option value="">Выберите действие...</option>'+
+      '<option value="trash">Удалить товар (Move to Trash)</option>'+
+      '<option value="private">Сделать товар приватным (Private + Update)</option></select>'+
+      '<small>Сначала выберите действие, затем нажмите «Тест: 1 товар» или «Начать». После запуска действие нельзя изменить без новой загрузки очереди.</small></div>'+
       '<div class="actions"><button class="primary" id="start">▶ Начать</button><button id="one">Тест: 1 товар</button>'+
       '<button id="pause">Ⅱ Пауза</button><button class="danger" id="stop">■ Стоп</button>'+
       '<button id="report">↓ Отчёт Excel</button></div>'+
       '<nav class="tabs">'+
       '<button data-tab="queue" class="on">Очередь</button>'+
       '<button data-tab="not_found">Не найдены</button>'+
-      '<button data-tab="failed">Ошибки удаления</button>'+
+      '<button data-tab="failed">Ошибки обработки</button>'+
       '<button data-tab="log">Журнал</button>'+
       '<button data-tab="import">Импорт Excel</button>'+
       '<button data-tab="help">Как работать</button></nav>'+
       '<div class="view" id="queue"><div class="tools">'+
       '<input type="search" id="search" placeholder="Фильтр очереди: ссылка, ID, название…">'+
       '<select id="filter"><option value="all">Все статусы</option><option value="pending">В очереди</option>'+
-      '<option value="done">Удалены</option><option value="skipped">Пропущено</option></select></div><div id="rows"></div></div>'+
+      '<option value="done">Выполнены</option><option value="skipped">Пропущено</option></select></div><div id="rows"></div></div>'+
       '<div class="view hidden" id="not_found"><div id="missingRows"></div></div>'+
       '<div class="view hidden" id="failed"><div id="failedRows"></div></div>'+
       '<div class="view hidden" id="log"><div class="tools"><button id="downloadLog">↓ Скачать журнал TXT</button><span class="hint">Последние 1500 событий</span></div><div id="logs"></div></div>'+
@@ -695,22 +700,21 @@
       '<p class="hint">Обязательный столбец: product_link. В нём укажите ссылки вида https://'+esc(DOMAIN)+'/wp-admin/post.php?post=3287&amp;action=edit. Другие столбцы не нужны. ID автоматически извлекается из ссылки.</p>'+
       '<pre id="preview" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#f6f8fc;padding:10px;border-radius:9px"></pre>'+
       '<button class="primary" id="load">Загрузить в очередь</button></div>'+
-      '<p class="hint">Каждый сайт хранит собственную очередь. Повторные ссылки на товар пропускаются; чужие домены блокируются.</p>'+
+      '<p class="hint">Сначала выберите действие над товарами в верхней панели. При ошибке отдельного товара скрипт фиксирует причину в журнале и продолжает работу. Очереди сайтов независимы.</p>'+
       '<div class="setting"><div>Пауза между товарами<small>Секунды, 1–30</small></div>'+
       '<input id="delay" type="number" min="1" max="30" value="2"></div>'+
-      '<label class="setting"><input id="stopOnError" type="checkbox"><div>Останавливаться при ошибке удаления<small>Не найденные товары всегда записываются отдельно, очередь продолжается.</small></div></label></div>'+
+      '<p class="hint">Отсутствующая ссылка или ошибка сохранения не останавливают очередь. Если сессия WordPress истекла, скрипт ставится на паузу до повторного входа.</p></div>'+
       '<div class="view help hidden" id="help">'+
-      '<h3>Как удалить товары по product_link</h3><ol>'+
-      '<li>В Excel подготовьте один обязательный столбец <b>product_link</b>. Каждая строка — ссылка редактора товара этого сайта.</li>'+
-      '<li>В разделе «Импорт Excel» выберите файл и лист, затем нажмите «Загрузить в очередь».</li>'+
-      '<li>Нажмите «Тест: 1 товар», чтобы реально переместить в корзину только один товар из списка.</li>'+
-      '<li>Нажмите «Начать» для остальных. Скрипт по очереди открывает product_link; поиск ID в списке товаров больше не используется.</li>'+
-      '<li>В карточке сверяется ID из ссылки и тип записи product, затем нажимается кнопка #delete-action → Move to Trash.</li>'+
-      '<li>После перехода проверяется результат. При перезагрузке ссылка Trash повторно не нажимается.</li>'+
-      '<li>Не открывшиеся карточки фиксируются в «Не найдены». Отсутствующая кнопка или неподтверждённое удаление — в «Ошибки удаления».</li>'+
-      '<li>После работы скачайте Excel-отчёт или TXT-журнал.</li>'+
-      '</ol><h3>Безопасность</h3><p>Принимаются только редакторские ссылки того же домена. Некорректные URL и дубли пропускаются. Очереди сайтов независимы. Trash — перемещение в корзину, а не безвозвратное удаление.</p>'+
-      '<p>Версии обновляются Tampermonkey через GitHub.</p></div>'+
+      '<h3>Выбор действия и импорт</h3><ol>'+
+      '<li>Подготовьте Excel с одним столбцом product_link, содержащим ссылки редактора товара на этом сайте.</li>'+
+      '<li>Загрузите Excel. Вверху панели выберите «Удалить товар (Move to Trash)» или «Сделать приватным».</li>'+
+      '<li>Нажмите «Тест: 1 товар» для пробного применения выбранного действия к одному товару.</li>'+
+      '<li>После теста нажмите «Начать» для обработки остальных ссылок.</li>'+
+      '</ol><h3>Режим: Удалить товар</h3><p>Открывается product_link → проверяется ID и тип product → нажимается #delete-action → Move to Trash → результат проверяется без повторного клика.</p>'+
+      '<h3>Режим: Сделать приватным</h3><p>Открывается product_link → Edit visibility → Private → OK → Update → серверное подтверждение статуса private. Если статус уже private, обновление пропускается.</p>'+
+      '<h3>Ошибки и результаты</h3><p>Ссылка не открылась — запись «Не найдены». Нет нужных элементов WordPress или сохранение не подтвердилось — «Ошибки обработки». Каждый случай фиксируется в журнале и очередь переходит к следующей ссылке.</p>'+
+      '<p>При истечении авторизации скрипт останавливает обработку до входа. Повторный Trash/Update после перезагрузки не выполняется.</p>'+
+      '<p>Выбранное действие закрепляется за очередью после запуска. Для другого действия создайте новую очередь из Excel.</p></div>'+
       '<footer class="foot"><span id="footer">Очередь сохраняется локально в Tampermonkey</span>'+
       '<button id="prev" title="Предыдущая страница">←</button><span id="pages">1 / 1</span>'+
       '<button id="next" title="Следующая страница">→</button></footer></div></section>';
@@ -763,6 +767,17 @@
       new ResizeObserver(()=>{clearTimeout(timeout);timeout=setTimeout(layoutSave,600);}).observe(panel);
     }
     $$('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
+    $('#operation').value=state.action||'';
+    $('#operation').onchange=e=>{
+      if(state.running||busy||state.started){
+        e.target.value=state.action||'';
+        toast('Для смены действия создайте новую очередь. Во время выполнения менять действие запрещено.');
+        return;
+      }
+      if(!['','trash','private'].includes(e.target.value))return;
+      state.action=e.target.value;
+      log('info','Оператор выбрал действие: '+actionName(state.action)+'.');
+    };
     $('#start').onclick=()=>start(false);
     $('#one').onclick=()=>start(true);
     $('#pause').onclick=()=>pause();
@@ -783,15 +798,10 @@
     drop.addEventListener('dragleave',()=>drop.classList.remove('over'));
     drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('over');readExcel(e.dataTransfer.files[0]);});
     $('#delay').value=state.settings.delay;
-    $('#stopOnError').checked=!!state.settings.stopOnError;
     $('#delay').onchange=e=>{
       if(!canEdit()){e.target.value=state.settings.delay;return;}
       state.settings.delay=Math.min(30,Math.max(1,Number(e.target.value)||2));
       e.target.value=state.settings.delay;persist();
-    };
-    $('#stopOnError').onchange=e=>{
-      if(!canEdit()){e.target.checked=state.settings.stopOnError;return;}
-      state.settings.stopOnError=e.target.checked;persist();
     };
     if (GM_getValue(PREFIX+':minimized',false)) {
       panel.classList.add('hidden');$('#pill').classList.remove('hidden');
@@ -810,7 +820,7 @@
     if (activeTab==='not_found') return state.rows.filter(x=>x.status==='not_found');
     if (activeTab==='failed') return state.rows.filter(x=>x.status==='failed');
     return state.rows.filter(x=>{
-      const matches=filter==='all'||(filter==='pending' ? ['pending','opening','deleting','verifying'].includes(x.status) : x.status===filter);
+      const matches=filter==='all'||(filter==='pending' ? ['pending','opening','deleting','saving','verifying'].includes(x.status) : x.status===filter);
       return matches && normalized(x.id+' '+x.productLink+' '+x.foundName).includes(normalized(search));
     });
   }
@@ -834,7 +844,7 @@
         '<tr class="'+(current()===r?'currentrow':'')+'"><td>'+r.excelRow+'</td>'+
         '<td><span class="title" title="'+esc(r.foundName||r.productLink||'—')+'">'+esc(r.foundName||('Товар ID '+(r.id||'—')))+
         '</span><small>'+esc(r.productLink||'')+'</small><small>'+esc(r.message||'')+'</small></td>'+
-        '<td><span class="badge '+(statuses[r.status]||'neutral')+'">'+(labels[r.status]||esc(r.status))+
+        '<td><span class="badge '+(statuses[r.status]||'neutral')+'">'+esc(rowLabel(r))+
         '</span></td></tr>'
       ).join('')+'</tbody></table>';
   }
@@ -848,9 +858,10 @@
     if(!root)return;
     const count=s=>state.rows.filter(r=>r.status===s).length;
     const done=count('done'),missing=count('not_found'),error=count('failed');
-    const pending=count('pending')+count('opening')+count('deleting')+count('verifying');
+    const pending=count('pending')+count('opening')+count('deleting')+count('saving')+count('verifying');
     $('#total').textContent=state.rows.length;
     $('#done').textContent=done;
+    $('#doneLabel').textContent=state.action==='private'?'Приватных':'Выполнено';
     $('#missing').textContent=missing;
     $('#errors').textContent=error;
     $('#bar').style.width=(state.rows.length?
@@ -870,6 +881,11 @@
     $('#start').textContent=recoverable?'▶ Возобновить':state.paused?'▶ Продолжить':'▶ Начать';
     $('#start').disabled=activeHere||lockedElsewhere||busy||!hasPending;
     $('#one').disabled=activeHere||lockedElsewhere||busy||!hasPending;
+    $('#operation').value=state.action||'';
+    $('#operation').disabled=activeHere||lockedElsewhere||busy||!!state.started;
+    if(!['trash','private'].includes(state.action)){
+      $('#start').disabled=true;$('#one').disabled=true;
+    }
     $('#pause').disabled=!activeHere;
     $('#stop').disabled=!activeHere;
     $('#report').disabled=!state.rows.length;
@@ -880,7 +896,7 @@
     $$('[data-tab]').forEach(b=>{
       const n=b.dataset.tab;
       if(n==='not_found')b.textContent='Не найдены ('+missing+')';
-      if(n==='failed')b.textContent='Ошибки удаления ('+error+')';
+      if(n==='failed')b.textContent='Ошибки обработки ('+error+')';
     });
     if(['queue','not_found','failed'].includes(activeTab))renderRows();
     if(activeTab==='log')renderLogs();
