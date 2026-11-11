@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SteamBuy — Product Trash Manager
+// @name         Product Manager — Trash / Private
 // @namespace    https://steambuy.pro/
-// @version      2.1.0
-// @description  Excel product_link → открыть редактор → Move to Trash → следующий; лог и отчёты, 7 сайтов.
+// @version      2.2.0
+// @description  Excel product_link → выбрать действие Trash или Private → открыть товар → применить → проверить; 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
 // @downloadURL  https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -30,8 +30,8 @@
 
 (() => {
   'use strict';
-  // Version 2 uses a new queue key: old running 1.x jobs cannot trigger deletions after upgrade.
-  const VERSION = '2.1.0';
+  // Keep v3 queues, but require explicit action selection after upgrading to v2.2.
+  const VERSION = '2.2.0';
   const DOMAIN = location.hostname;
   const PREFIX = 'sb-product-trash-v3:' + DOMAIN;
   const OLD_LEASE = 'sb-product-trash-v2:' + DOMAIN + ':lease';
@@ -57,21 +57,40 @@
   const tabId = sessionStorage.getItem(TAB) || (Date.now().toString(36) + Math.random().toString(36).slice(2));
   sessionStorage.setItem(TAB, tabId);
   const defaults = () => ({
-    v: 3, filename: '', sheet: '', rows: [], logs: [], index: -1,
+    v: 3, schema: 2, action: '', filename: '', sheet: '', rows: [], logs: [], index: -1,
     phase: 'idle', running: false, paused: false, mode: 'batch', runCount: 0,
     owner: '', pending: null,
     settings: { delay: 2, stopOnError: false }, updated: '', started: ''
   });
   let state = GM_getValue(KEY, null) || defaults();
   if (state.v !== 3 || !Array.isArray(state.rows)) state = defaults();
-  state.settings = Object.assign({delay: 2, stopOnError: false}, state.settings || {});
+  state.settings = Object.assign({delay: 2}, state.settings || {});
+  // Older v2.1 runs were delete-only. Pause on upgrade rather than silently continuing Trash.
+  if(state.schema !== 2){
+    const currentRow=state.rows[state.index];
+    const trashPending=!!(state.pending && currentRow &&
+      ['verify','verifying','deleting'].includes(state.phase));
+    state.running=false;state.paused=!!state.rows.length;
+    state.action=trashPending?'trash':'';
+    if(trashPending) currentRow.action='trash';
+    else state.started='';
+    state.schema=2;
+    state.logs.push({time:new Date().toISOString(),level:'warn',id:currentRow?.id||'',
+      row:currentRow?.excelRow||'',message:'Обновление v2.2: автоматическая работа приостановлена. Выберите действие перед продолжением.'});
+    GM_setValue(KEY,state);
+  }
   let root, panel, book = null, fileName = '';
   let activeTab = 'queue', filter = 'all', search = '', page = 0;
   let busy = false, moving = false, timer = null, heartbeat = null, expanded = false, dragging = null;
-  const labels = {pending:'Ожидает', opening:'Открытие', deleting:'Удаляется', verifying:'Проверка',
-    done:'Удалён', not_found:'Не найден', failed:'Ошибка удаления', skipped:'Пропущен'};
+  const labels = {pending:'Ожидает', opening:'Открытие', deleting:'Удаляется',
+    saving:'Сохранение', verifying:'Проверка',done:'Выполнено',
+    not_found:'Не найден', failed:'Ошибка обработки', skipped:'Пропущен'};
+  const ACTION_LABELS = {trash:'Переместить в Trash', private:'Сделать приватным'};
+  const actionName = action => ACTION_LABELS[action] || 'Не выбрано';
+  const rowLabel = r => r.status==='done'
+    ? (r.action==='private'?'Приватный':'Удалён') : rowLabel(r);
   const statuses = {done:'done', failed:'bad', not_found:'bad', skipped:'neutral',
-    opening:'work', deleting:'work', verifying:'work', pending:'neutral'};
+    opening:'work', deleting:'work', saving:'work', verifying:'work', pending:'neutral'};
   function persist() {
     state.updated = now();
     GM_setValue(KEY, state);
@@ -168,7 +187,15 @@
   function nextPending() { return state.rows.findIndex(r => r.status === 'pending'); }
   function schedule(ms = 80) {
     clearTimeout(timer);
-    if (state.running && !busy && !moving) timer = setTimeout(runStep,ms);
+    if (state.running && !busy && !moving) timer = setTimeout(()=>{
+      try{runStep();}
+      catch(e){
+        const row=current();
+        const message='Неожиданная ошибка скрипта: '+(e?.message||String(e));
+        if(row&&!TERMINAL.has(row.status))finalize(row,'failed',message);
+        else {log('error',message,row);state.running=false;state.paused=true;persist();release();}
+      }
+    },ms);
   }
   function pause(reason = 'Пауза по запросу пользователя') {
     clearTimeout(timer);
@@ -180,6 +207,7 @@
   function stop() { pause('Остановлено пользователем. Сохранённые результаты не потеряны.'); }
   function finalize(row, status, message) {
     if (!row) return;
+    if(!row.action && ['trash','private'].includes(state.action))row.action=state.action;
     row.status = status;
     row.message = message;
     row.finished = now();
@@ -187,18 +215,11 @@
     state.phase = 'idle';
     state.index = -1;
     state.runCount++;
-    log(status === 'done' ? 'ok' : 'error', message, row);
+    log(status === 'done' ? 'ok' : (status==='not_found'?'warn':'error'), '['+actionName(row.action)+'] '+message, row);
     if (state.mode === 'one' && state.runCount >= 1) {
       state.running = false;
       state.paused = true;
       log('info','Тест одного товара завершён. Остальная очередь не затронута.');
-      release();
-      return;
-    }
-    if (status !== 'done' && status !== 'not_found' && state.settings.stopOnError) {
-      state.running = false;
-      state.paused = true;
-      log('error','Обработка остановлена согласно настройке «Пауза при ошибке».',row);
       release();
       return;
     }
@@ -248,7 +269,98 @@
       u.searchParams.get('action')!=='trash'||!u.searchParams.get('_wpnonce'))return null;
     return u.href;
   }
+  // WordPress Classic Editor: Edit visibility -> Private -> OK -> Update.
+  function makePrivate(row,status) {
+    if(status==='private')
+      return finalize(row,'done','Товар уже приватный. Update не требуется.');
+    const edit=document.querySelector('a.edit-visibility[href="#visibility"]');
+    const radio=document.querySelector('#visibility-radio-private');
+    const ok=document.querySelector('a.save-post-visibility[href="#visibility"]');
+    const update=document.querySelector('#publish');
+    const missing=[];
+    if(!edit)missing.push('Edit visibility');
+    if(!radio)missing.push('#visibility-radio-private');
+    if(!ok)missing.push('OK / save-post-visibility');
+    if(!update)missing.push('Update / #publish');
+    if(missing.length)return finalize(row,'failed',
+      'Редактор открыт, но не найдены элементы приватности: '+missing.join(', ')+'.');
+    if(update.disabled)return finalize(row,'failed','Кнопка Update недоступна (disabled).');
+    try{
+      log('info','ID '+row.id+': открываем Edit visibility.',row);
+      edit.click();
+      radio.click(); // Triggers native input/change listeners for Classic Editor.
+      if(!radio.checked)throw new Error('Не удалось выбрать radio Private.');
+      ok.click();
+      if(!radio.checked)throw new Error('После OK переключатель Private не выбран.');
+    }catch(e){
+      return finalize(row,'failed','Не удалось выбрать Private → OK: '+(e.message||e));
+    }
+    // Persist BEFORE Update: after a page reload, only verification is permitted.
+    state.phase='verify-private';
+    state.pending={id:row.id,action:'private',at:now()};
+    row.status='saving';
+    row.message='Private выбран и подтверждён через OK; выполняется Update.';
+    log('info','ID '+row.id+': выбран Private, подтверждено OK. Нажимаем Update.',row);
+    try{
+      update.click();
+    }catch(e){
+      return finalize(row,'failed','Не удалось нажать Update: '+(e.message||e)+
+        '. Повторный Update автоматически не выполняется.');
+    }
+    // If an on-page handler suppressed navigation, verify server-side without submitting again.
+    setTimeout(()=>{
+      if(state.running&&ownLease()&&current()?.id===row.id&&
+        state.phase==='verify-private'&&!busy&&!moving)verifyPrivate(row);
+    },4500);
+  }
+  async function verifyPrivate(row) {
+    if(busy)return;
+    busy=true;
+    row.status='verifying';
+    row.message='Проверка статуса Private после Update (без повторного сохранения).';
+    persist();
+    try{
+      // Fetch a fresh WordPress editor response; current page may still contain unsaved changes.
+      for(let attempt=1;attempt<=3;attempt++){
+        const doc=await fetchAdmin(row.productLink);
+        const error=doc.querySelector('.wp-die-message');
+        if(error)throw new Error('WordPress вернул ошибку: '+clean(error.textContent).slice(0,180));
+        const id=clean(doc.querySelector('#post_ID,input[name="post_ID"]')?.value);
+        const type=clean(doc.querySelector('#post_type,input[name="post_type"]')?.value)||
+          (doc.body?.classList.contains('post-type-product')?'product':'');
+        const savedStatus=clean(doc.querySelector('#post_status,input[name="post_status"]')?.value)||
+          clean(doc.querySelector('#original_post_status,input[name="original_post_status"]')?.value);
+        if(id!==row.id || type!=='product'){
+          throw new Error('Не удалось удостовериться в ID/типе товара после Update. Получено ID='+
+            (id||'—')+', тип='+(type||'—')+'.');
+        }
+        if(savedStatus==='private'){
+          return finalize(row,'done','Товар ID '+row.id+' успешно сохранён как Private.');
+        }
+        if(attempt<3){
+          log('warn','ID '+row.id+': статус после Update = '+(savedStatus||'неизвестен')+
+            '. Повторная проверка без нажатия Update.',row);
+          await delay(1100);
+        }else{
+          return finalize(row,'failed','Private не подтверждён после Update. Текущий статус: '+
+            (savedStatus||'неизвестен')+'. Повторный Update автоматически не выполняется.');
+        }
+      }
+    }catch(e){
+      finalize(row,'failed','Ошибка проверки приватности ID '+row.id+': '+(e.message||e)+
+        '. Повторного Update не будет.');
+      if(/сессия|войти|авторизац/i.test(e.message||'')){
+        state.running=false;state.paused=true;persist();release();
+      }
+    }finally{
+      busy=false;
+      if(state.running)schedule(Math.max(700,Number(state.settings.delay)*1000));
+    }
+  }
   function openProduct(row) {
+    // Action is fixed for the row once processing starts, regardless of UI changes.
+    if(!['trash','private'].includes(row.action)) row.action=state.action;
+    if(!['trash','private'].includes(row.action))return failFatal('Выберите действие перед запуском.',row);
     if(!isProductEditor(row)){
       row.openAttempts=(row.openAttempts||0)+1;
       if(row.openAttempts>2)return finalize(row,'not_found',
@@ -275,7 +387,11 @@
     row.wpPostId=actualId;
     row.foundName=clean(document.querySelector('#title,input[name="post_title"]')?.value)||
       clean(document.querySelector('.editor-post-title__input')?.textContent)||'';
-    if(status==='trash')return finalize(row,'done','Товар уже находится в корзине.');
+    if(status==='trash') {
+      if(row.action==='trash')return finalize(row,'done','Товар уже находится в корзине.');
+      return finalize(row,'failed','Нельзя сделать приватным товар, который уже находится в корзине.');
+    }
+    if(row.action==='private')return makePrivate(row,status);
     const anchor=document.querySelector('#delete-action a.submitdelete.deletion')||
       document.querySelector('#delete-action a.submitdelete');
     const link=safeTrashLink(anchor,row);
@@ -284,7 +400,8 @@
     state.phase='verify';state.pending={id:row.id,href:link,at:now()};
     row.status='deleting';row.message='Нажимаем Move to Trash, затем проверяем.';
     log('info','Товар '+(row.foundName||'без названия')+' (ID '+row.id+'). Клик по Move to Trash.',row);
-    anchor.click();
+    try {anchor.click();}
+    catch(error) {return finalize(row,'failed','Ошибка нажатия Move to Trash: '+(error.message||error));}
     // WordPress normally navigates. If an interceptor blocks navigation, verify without re-clicking.
     setTimeout(()=>{
       if(state.running&&ownLease()&&current()?.id===row.id&&state.phase==='verify'&&!busy&&!moving)
@@ -375,9 +492,13 @@
     if(!row||TERMINAL.has(row.status)){
       state.index=-1;state.phase='idle';persist();return schedule();
     }
-    if(['verify','verifying','deleting'].includes(state.phase)){
+    if(['verify','verifying','deleting','verify-trash'].includes(state.phase)){
       log('warn','Возобновление: проверка предыдущего Trash. Второго нажатия не будет.',row);
       return verifyTrash(row);
+    }
+    if(['verify-private','saving'].includes(state.phase)){
+      log('warn','Возобновление: проверяем сохранённую приватность без повторного Update.',row);
+      return verifyPrivate(row);
     }
     state.phase='open';openProduct(row);
   }
@@ -385,25 +506,31 @@
     if(busy||moving)return toast('Дождитесь завершения текущего действия.');
     readState();
     if(!state.rows.length)return toast('Сначала загрузите Excel со столбцом product_link.');
+    const pendingAction=state.pending?.action || (state.pending && ['verify','verifying','deleting'].includes(state.phase)?'trash':'');
+    const selected=clean(state.action);
+    if(!['trash','private'].includes(selected)&&!pendingAction)return toast('Сначала выберите действие: Trash или Private.');
     if(!claim())return;
     const ongoing=state.index>=0&&!!current()&&!TERMINAL.has(current().status);
     if(!ongoing){state.index=nextPending();state.phase='open';}
     if(state.index<0){release();return toast('Все ссылки обработаны. Загрузите новый Excel.');}
     const row=current();
+    if(pendingAction && !row.action)row.action=pendingAction;
     if(row.status==='pending'&&state.phase==='open'){
       const count=state.rows.filter(r=>r.status==='pending').length;
+      const action=actionName(state.action);
       if(!confirm(one?
-        'ТЕСТ: переместить ровно один товар в Trash?\n'+row.productLink+
-        '\n\nЭто реальное перемещение в корзину.' :
-        'Начать массовое перемещение товаров в Trash?\nСайт: '+DOMAIN+
+        'ТЕСТ: обработать один товар?\nДействие: '+action+'\n'+row.productLink :
+        'Запустить обработку товаров?\nСайт: '+DOMAIN+'\nДействие: '+action+
         '\nОсталось ссылок: '+count)){
         release();return;
       }
     }
     state.mode=one?'one':'batch';
-    state.runCount=0;state.running=true;state.paused=false;state.owner=tabId;
+    state.runCount=0;
+    if(!row.action)row.action=state.action;
+    state.running=true;state.paused=false;state.owner=tabId;
     if(!state.started)state.started=now();
-    log('info',(one?'Тест одной ссылки':'Массовая обработка product_link')+' запущен.',row);
+    log('info',(one?'Тест одной ссылки':'Массовая обработка product_link')+' запущен. Действие: '+actionName(row.action)+'.',row);
     schedule();
   }
 
@@ -483,32 +610,40 @@
     const good=rows.filter(r=>r.status==='pending').length;
     if(!good)return toast('Нет корректных ссылок на редактор товаров этого сайта.');
     if(state.rows.length&&!confirm('Заменить прежнюю очередь для '+DOMAIN+'? Вы можете сначала скачать отчёт.'))return;
-    state=defaults();state.filename=fileName;state.sheet=book.SheetNames[Number($('#sheet').value)];state.rows=rows;
-    log('info','Импорт '+fileName+': '+rows.length+' ссылок, к обработке '+good+', пропущено '+(rows.length-good)+'.');
+    const chosenAction=state.action;
+    state=defaults();state.action=chosenAction;state.filename=fileName;state.sheet=book.SheetNames[Number($('#sheet').value)];state.rows=rows;
+    for(const r of rows){
+      if(r.status!=='skipped')continue;
+      state.logs.push({time:now(),level:'warn',id:r.id,row:r.excelRow,
+        message:'Пропуск ссылки '+r.productLink+': '+r.message});
+    }
+    if(state.logs.length>MAX_LOGS)state.logs.splice(0,state.logs.length-MAX_LOGS);
+    log('info','Импорт '+fileName+': '+rows.length+' ссылок, к обработке '+good+', пропущено '+(rows.length-good)+'. Действие: '+actionName(state.action)+'.');
     setTab('queue');
   }
   function report(){
     if(!state.rows.length)return toast('Очередь пуста.');
     if(typeof XLSX==='undefined')return toast('Библиотека XLSX недоступна.');
-    const cols=['Строка Excel','product_link','ID из ссылки','Название на сайте','Статус','Комментарий','Завершено'];
-    const line=r=>[r.excelRow,r.productLink,r.id,r.foundName,labels[r.status]||r.status,r.message,r.finished];
+    const cols=['Строка Excel','product_link','ID из ссылки','Название на сайте','Действие','Статус','Комментарий','Завершено'];
+    const line=r=>[r.excelRow,r.productLink,r.id,r.foundName,actionName(r.action||state.action),rowLabel(r),r.message,r.finished];
     const wb=XLSX.utils.book_new();
     const add=(name,rows)=>{
       const ws=XLSX.utils.aoa_to_sheet([cols,...rows.map(line)]);
-      ws['!cols']=[{wch:13},{wch:100},{wch:18},{wch:50},{wch:24},{wch:105},{wch:25}];
+      ws['!cols']=[{wch:13},{wch:100},{wch:18},{wch:50},{wch:30},{wch:24},{wch:105},{wch:25}];
       XLSX.utils.book_append_sheet(wb,ws,name);
     };
     add('Все товары',state.rows);
-    add('Удалено',state.rows.filter(r=>r.status==='done'));
+    add('Удалено',state.rows.filter(r=>r.status==='done'&&r.action!=='private'));
+    add('Приватные',state.rows.filter(r=>r.status==='done'&&r.action==='private'));
     add('Не найдено',state.rows.filter(r=>r.status==='not_found'));
-    add('Ошибки удаления',state.rows.filter(r=>r.status==='failed'));
+    add('Ошибки обработки',state.rows.filter(r=>r.status==='failed'));
     add('Пропущено',state.rows.filter(r=>r.status==='skipped'));
     const ws=XLSX.utils.aoa_to_sheet([['Время','Уровень','ID','Строка','Сообщение'],
       ...state.logs.map(x=>[x.time,x.level,x.id,x.row,x.message])]);
     ws['!cols']=[{wch:26},{wch:14},{wch:20},{wch:14},{wch:100}];
     XLSX.utils.book_append_sheet(wb,ws,'Журнал');
     const safe=(state.filename||'products').replace(/\.(xlsx|xls|csv)$/i,'').replace(/[\\/:*?"<>|]/g,'_');
-    XLSX.writeFile(wb,safe+'_'+DOMAIN+'_trash_result.xlsx');
+    XLSX.writeFile(wb,safe+'_'+DOMAIN+'_product_manager_result.xlsx');
     log('info','Отчёт по ссылкам product_link скачан.');
   }
   function downloadLog() {
@@ -527,7 +662,7 @@
     '.head{background:#14263e;color:white;padding:16px 18px;display:flex;align-items:center;gap:12px;cursor:move;touch-action:none;user-select:none}.logo{height:36px;width:36px;background:#4275ed;display:grid;place-items:center;border-radius:10px;font-size:18px;font-weight:800}.head b{font-size:16px;letter-spacing:.2px}.head small{color:#b1c2d9;display:block;font-size:11px}.head .spacer{flex:1}.icon{background:#ffffff13;color:#fff;border-color:#ffffff22;padding:4px 9px}',
     '.body{display:flex;flex-direction:column;min-height:0;flex:1}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:14px 16px 10px}.card{border:1px solid #e4eaf2;border-radius:10px;padding:9px 12px;background:#fafbfd}.card b{display:block;font-size:21px;line-height:1.25}.card span{font-size:11px;color:#68778c}.card.done b{color:#16835e}.card.bad b{color:#bd4f39}',
     '.progress{height:5px;background:#eaf0f8;margin:0 16px;border-radius:5px;overflow:hidden}.progress i{height:100%;display:block;background:#4076ed;transition:width .3s}.current{padding:10px 16px;display:flex;gap:8px;align-items:center;color:#586b83;min-height:42px}.dot{height:8px;width:8px;background:#93a1b3;border-radius:50%;flex:none}.dot.run{background:#3974ee;box-shadow:0 0 0 4px #e5edff}.current span:last-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-    '.actions{display:flex;gap:7px;flex-wrap:wrap;padding:0 16px 12px}.primary{background:#3468df!important;border-color:#3468df!important;color:white}.danger{color:#b04439;border-color:#eabcb6;background:#fff7f6}.tabs{display:flex;gap:18px;overflow:auto;flex-shrink:0;padding:0 16px;border-bottom:1px solid #e4eaf2}.tabs button{flex-shrink:0;border:0;border-radius:0;padding:10px 0;color:#7a889a;background:none;font-size:12px}.tabs button.on{color:#265cce;border-bottom:2px solid #3468df}',
+    '.operation{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 16px 12px;padding:11px 12px;background:#f4f7fc;border:1px solid #dce6f3;border-radius:10px}.operation label{font-weight:750;font-size:12px;color:#31445c}.operation select{flex:1;min-width:200px}.operation small{flex-basis:100%;color:#6b7b92;font-size:11px}.actions{display:flex;gap:7px;flex-wrap:wrap;padding:0 16px 12px}.primary{background:#3468df!important;border-color:#3468df!important;color:white}.danger{color:#b04439;border-color:#eabcb6;background:#fff7f6}.tabs{display:flex;gap:18px;overflow:auto;flex-shrink:0;padding:0 16px;border-bottom:1px solid #e4eaf2}.tabs button{flex-shrink:0;border:0;border-radius:0;padding:10px 0;color:#7a889a;background:none;font-size:12px}.tabs button.on{color:#265cce;border-bottom:2px solid #3468df}',
     '.view{padding:12px 16px;min-height:0;flex:1;overflow:auto}.hidden{display:none!important}.tools{display:flex;gap:8px;margin-bottom:10px}input,select{border:1px solid #dce3ed;border-radius:8px;background:#fff;padding:8px;color:#22324a;min-width:0}input[type=search]{flex:1}table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px}th{text-align:left;color:#7c899b;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:8px 6px;background:#f7f9fc;position:sticky;top:0}td{padding:10px 6px;border-bottom:1px solid #edf1f6;vertical-align:top}tr.currentrow{background:#eff5ff}td .title{font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}td small{color:#8290a2;display:block;font-size:10px;overflow-wrap:anywhere}.badge{font-size:10px;padding:3px 7px;border-radius:6px;display:inline-block;white-space:nowrap;background:#eef2f7;color:#62738a}.badge.done{background:#e4f5ec;color:#147c55}.badge.bad{background:#fff0e8;color:#b24b28}.badge.work{background:#e7efff;color:#2b62ce}',
     '.foot{padding:10px 16px;border-top:1px solid #e4eaf2;display:flex;align-items:center;gap:8px;background:#fafbfd;font-size:11px;color:#7a889a}.foot span:first-child{flex:1}.foot button{padding:4px 8px;font-size:11px}.empty{text-align:center;padding:28px 16px;color:#77869b}.empty b{display:block;color:#31435c;font-size:16px;margin-bottom:6px}.drop{border:2px dashed #c4d2e9;border-radius:12px;text-align:center;padding:20px;margin:4px 0 12px;background:#f7faff}.drop.over{border-color:#3468df;background:#eaf1ff}.drop label{cursor:pointer;color:#2b63d4;font-weight:700}.drop small{display:block;margin-top:5px;color:#7b8a9e}.mapping{display:grid;grid-template-columns:120px 1fr;gap:8px;align-items:center}.mapping label{color:#61728a}.hint{font-size:12px;color:#6d7e94;margin:10px 0}.logline{display:grid;grid-template-columns:80px 80px 1fr;gap:8px;padding:8px 0;border-bottom:1px solid #edf1f6;font-size:11px;overflow-wrap:anywhere}.logline.error{color:#a83f2f}.logline.ok{color:#147c55}.logline.warn{color:#955e0d}',
     '.pill{position:fixed;right:22px;bottom:20px;border-radius:14px;background:#14263e;color:#fff;padding:12px 18px;box-shadow:0 8px 30px #0f233b40;pointer-events:auto}.pill:hover{background:#24466b;color:white}.notice{position:absolute;bottom:54px;left:16px;right:16px;z-index:8;padding:12px;background:#fff7e7;border:1px solid #e3cdab;border-radius:10px;color:#75551f;box-shadow:0 6px 20px #0002}.notice button{float:right;padding:0 6px;margin-right:5px}.help h3{font-size:13px;color:#263d5c}.help p,.help li{font-size:12px;color:#61728a}.help ol{padding-left:20px}.setting{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #edf1f6}.setting input[type=number]{width:80px}.setting small{display:block;color:#7a899c}',
@@ -540,32 +675,37 @@
     document.documentElement.append(host);
     root=host.attachShadow({mode:'open'});
     root.innerHTML='<style>'+CSS+'</style>'+
-      '<button class="pill hidden" id="pill">Product Trash · открыть</button>'+
+      '<button class="pill hidden" id="pill">Product Manager · открыть</button>'+
       '<section class="panel" id="panel"><header class="head" id="drag">'+
-      '<div class="logo">T</div><div><b>Product Trash Manager</b><small>'+esc(DOMAIN)+' · WooCommerce · v'+VERSION+'</small></div>'+
+      '<div class="logo">P</div><div><b>Product Manager</b><small>'+esc(DOMAIN)+' · Trash / Private · v'+VERSION+'</small></div>'+
       '<span class="spacer"></span><button class="icon" id="full" title="На весь экран">⛶</button>'+
       '<button class="icon" id="min" title="Свернуть">—</button></header>'+
       '<div class="body"><div class="stats">'+
       '<div class="card"><b id="total">0</b><span>Товаров в файле</span></div>'+
-      '<div class="card done"><b id="done">0</b><span>Удалено</span></div>'+
+      '<div class="card done"><b id="done">0</b><span id="doneLabel">Выполнено</span></div>'+
       '<div class="card bad"><b id="missing">0</b><span>Не найдено</span></div>'+
       '<div class="card bad"><b id="errors">0</b><span>Ошибки</span></div></div>'+
       '<div class="progress"><i id="bar"></i></div>'+
       '<div class="current"><i class="dot" id="dot"></i><span id="current">Загрузите Excel с товарами</span></div>'+
+      '<div class="operation"><label for="operation">Действие с товарами</label>'+
+      '<select id="operation"><option value="">Выберите действие...</option>'+
+      '<option value="trash">Удалить товар (Move to Trash)</option>'+
+      '<option value="private">Сделать товар приватным (Private + Update)</option></select>'+
+      '<small>Сначала выберите действие, затем нажмите «Тест: 1 товар» или «Начать». После запуска действие нельзя изменить без новой загрузки очереди.</small></div>'+
       '<div class="actions"><button class="primary" id="start">▶ Начать</button><button id="one">Тест: 1 товар</button>'+
       '<button id="pause">Ⅱ Пауза</button><button class="danger" id="stop">■ Стоп</button>'+
       '<button id="report">↓ Отчёт Excel</button></div>'+
       '<nav class="tabs">'+
       '<button data-tab="queue" class="on">Очередь</button>'+
       '<button data-tab="not_found">Не найдены</button>'+
-      '<button data-tab="failed">Ошибки удаления</button>'+
+      '<button data-tab="failed">Ошибки обработки</button>'+
       '<button data-tab="log">Журнал</button>'+
       '<button data-tab="import">Импорт Excel</button>'+
       '<button data-tab="help">Как работать</button></nav>'+
       '<div class="view" id="queue"><div class="tools">'+
       '<input type="search" id="search" placeholder="Фильтр очереди: ссылка, ID, название…">'+
       '<select id="filter"><option value="all">Все статусы</option><option value="pending">В очереди</option>'+
-      '<option value="done">Удалены</option><option value="skipped">Пропущено</option></select></div><div id="rows"></div></div>'+
+      '<option value="done">Выполнены</option><option value="skipped">Пропущено</option></select></div><div id="rows"></div></div>'+
       '<div class="view hidden" id="not_found"><div id="missingRows"></div></div>'+
       '<div class="view hidden" id="failed"><div id="failedRows"></div></div>'+
       '<div class="view hidden" id="log"><div class="tools"><button id="downloadLog">↓ Скачать журнал TXT</button><span class="hint">Последние 1500 событий</span></div><div id="logs"></div></div>'+
@@ -577,22 +717,21 @@
       '<p class="hint">Обязательный столбец: product_link. В нём укажите ссылки вида https://'+esc(DOMAIN)+'/wp-admin/post.php?post=3287&amp;action=edit. Другие столбцы не нужны. ID автоматически извлекается из ссылки.</p>'+
       '<pre id="preview" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#f6f8fc;padding:10px;border-radius:9px"></pre>'+
       '<button class="primary" id="load">Загрузить в очередь</button></div>'+
-      '<p class="hint">Каждый сайт хранит собственную очередь. Повторные ссылки на товар пропускаются; чужие домены блокируются.</p>'+
+      '<p class="hint">Сначала выберите действие над товарами в верхней панели. При ошибке отдельного товара скрипт фиксирует причину в журнале и продолжает работу. Очереди сайтов независимы.</p>'+
       '<div class="setting"><div>Пауза между товарами<small>Секунды, 1–30</small></div>'+
       '<input id="delay" type="number" min="1" max="30" value="2"></div>'+
-      '<label class="setting"><input id="stopOnError" type="checkbox"><div>Останавливаться при ошибке удаления<small>Не найденные товары всегда записываются отдельно, очередь продолжается.</small></div></label></div>'+
+      '<p class="hint">Отсутствующая ссылка или ошибка сохранения не останавливают очередь. Если сессия WordPress истекла, скрипт ставится на паузу до повторного входа.</p></div>'+
       '<div class="view help hidden" id="help">'+
-      '<h3>Как удалить товары по product_link</h3><ol>'+
-      '<li>В Excel подготовьте один обязательный столбец <b>product_link</b>. Каждая строка — ссылка редактора товара этого сайта.</li>'+
-      '<li>В разделе «Импорт Excel» выберите файл и лист, затем нажмите «Загрузить в очередь».</li>'+
-      '<li>Нажмите «Тест: 1 товар», чтобы реально переместить в корзину только один товар из списка.</li>'+
-      '<li>Нажмите «Начать» для остальных. Скрипт по очереди открывает product_link; поиск ID в списке товаров больше не используется.</li>'+
-      '<li>В карточке сверяется ID из ссылки и тип записи product, затем нажимается кнопка #delete-action → Move to Trash.</li>'+
-      '<li>После перехода проверяется результат. При перезагрузке ссылка Trash повторно не нажимается.</li>'+
-      '<li>Не открывшиеся карточки фиксируются в «Не найдены». Отсутствующая кнопка или неподтверждённое удаление — в «Ошибки удаления».</li>'+
-      '<li>После работы скачайте Excel-отчёт или TXT-журнал.</li>'+
-      '</ol><h3>Безопасность</h3><p>Принимаются только редакторские ссылки того же домена. Некорректные URL и дубли пропускаются. Очереди сайтов независимы. Trash — перемещение в корзину, а не безвозвратное удаление.</p>'+
-      '<p>Версии обновляются Tampermonkey через GitHub.</p></div>'+
+      '<h3>Выбор действия и импорт</h3><ol>'+
+      '<li>Подготовьте Excel с одним столбцом product_link, содержащим ссылки редактора товара на этом сайте.</li>'+
+      '<li>Загрузите Excel. Вверху панели выберите «Удалить товар (Move to Trash)» или «Сделать приватным».</li>'+
+      '<li>Нажмите «Тест: 1 товар» для пробного применения выбранного действия к одному товару.</li>'+
+      '<li>После теста нажмите «Начать» для обработки остальных ссылок.</li>'+
+      '</ol><h3>Режим: Удалить товар</h3><p>Открывается product_link → проверяется ID и тип product → нажимается #delete-action → Move to Trash → результат проверяется без повторного клика.</p>'+
+      '<h3>Режим: Сделать приватным</h3><p>Открывается product_link → Edit visibility → Private → OK → Update → серверное подтверждение статуса private. Если статус уже private, обновление пропускается.</p>'+
+      '<h3>Ошибки и результаты</h3><p>Ссылка не открылась — запись «Не найдены». Нет нужных элементов WordPress или сохранение не подтвердилось — «Ошибки обработки». Каждый случай фиксируется в журнале и очередь переходит к следующей ссылке.</p>'+
+      '<p>При истечении авторизации скрипт останавливает обработку до входа. Повторный Trash/Update после перезагрузки не выполняется.</p>'+
+      '<p>Выбранное действие закрепляется за очередью после запуска. Для другого действия создайте новую очередь из Excel.</p></div>'+
       '<footer class="foot"><span id="footer">Очередь сохраняется локально в Tampermonkey</span>'+
       '<button id="prev" title="Предыдущая страница">←</button><span id="pages">1 / 1</span>'+
       '<button id="next" title="Следующая страница">→</button></footer></div></section>';
@@ -645,6 +784,17 @@
       new ResizeObserver(()=>{clearTimeout(timeout);timeout=setTimeout(layoutSave,600);}).observe(panel);
     }
     $$('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
+    $('#operation').value=state.action||'';
+    $('#operation').onchange=e=>{
+      if(state.running||busy||state.started){
+        e.target.value=state.action||'';
+        toast('Для смены действия создайте новую очередь. Во время выполнения менять действие запрещено.');
+        return;
+      }
+      if(!['','trash','private'].includes(e.target.value))return;
+      state.action=e.target.value;
+      log('info','Оператор выбрал действие: '+actionName(state.action)+'.');
+    };
     $('#start').onclick=()=>start(false);
     $('#one').onclick=()=>start(true);
     $('#pause').onclick=()=>pause();
@@ -665,15 +815,10 @@
     drop.addEventListener('dragleave',()=>drop.classList.remove('over'));
     drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('over');readExcel(e.dataTransfer.files[0]);});
     $('#delay').value=state.settings.delay;
-    $('#stopOnError').checked=!!state.settings.stopOnError;
     $('#delay').onchange=e=>{
       if(!canEdit()){e.target.value=state.settings.delay;return;}
       state.settings.delay=Math.min(30,Math.max(1,Number(e.target.value)||2));
       e.target.value=state.settings.delay;persist();
-    };
-    $('#stopOnError').onchange=e=>{
-      if(!canEdit()){e.target.checked=state.settings.stopOnError;return;}
-      state.settings.stopOnError=e.target.checked;persist();
     };
     if (GM_getValue(PREFIX+':minimized',false)) {
       panel.classList.add('hidden');$('#pill').classList.remove('hidden');
@@ -692,7 +837,7 @@
     if (activeTab==='not_found') return state.rows.filter(x=>x.status==='not_found');
     if (activeTab==='failed') return state.rows.filter(x=>x.status==='failed');
     return state.rows.filter(x=>{
-      const matches=filter==='all'||(filter==='pending' ? ['pending','opening','deleting','verifying'].includes(x.status) : x.status===filter);
+      const matches=filter==='all'||(filter==='pending' ? ['pending','opening','deleting','saving','verifying'].includes(x.status) : x.status===filter);
       return matches && normalized(x.id+' '+x.productLink+' '+x.foundName).includes(normalized(search));
     });
   }
@@ -716,7 +861,7 @@
         '<tr class="'+(current()===r?'currentrow':'')+'"><td>'+r.excelRow+'</td>'+
         '<td><span class="title" title="'+esc(r.foundName||r.productLink||'—')+'">'+esc(r.foundName||('Товар ID '+(r.id||'—')))+
         '</span><small>'+esc(r.productLink||'')+'</small><small>'+esc(r.message||'')+'</small></td>'+
-        '<td><span class="badge '+(statuses[r.status]||'neutral')+'">'+(labels[r.status]||esc(r.status))+
+        '<td><span class="badge '+(statuses[r.status]||'neutral')+'">'+esc(rowLabel(r))+
         '</span></td></tr>'
       ).join('')+'</tbody></table>';
   }
@@ -730,9 +875,10 @@
     if(!root)return;
     const count=s=>state.rows.filter(r=>r.status===s).length;
     const done=count('done'),missing=count('not_found'),error=count('failed');
-    const pending=count('pending')+count('opening')+count('deleting')+count('verifying');
+    const pending=count('pending')+count('opening')+count('deleting')+count('saving')+count('verifying');
     $('#total').textContent=state.rows.length;
     $('#done').textContent=done;
+    $('#doneLabel').textContent=state.action==='private'?'Приватных':'Выполнено';
     $('#missing').textContent=missing;
     $('#errors').textContent=error;
     $('#bar').style.width=(state.rows.length?
@@ -752,6 +898,11 @@
     $('#start').textContent=recoverable?'▶ Возобновить':state.paused?'▶ Продолжить':'▶ Начать';
     $('#start').disabled=activeHere||lockedElsewhere||busy||!hasPending;
     $('#one').disabled=activeHere||lockedElsewhere||busy||!hasPending;
+    $('#operation').value=state.action||'';
+    $('#operation').disabled=activeHere||lockedElsewhere||busy||!!state.started;
+    if(!['trash','private'].includes(state.action)){
+      $('#start').disabled=true;$('#one').disabled=true;
+    }
     $('#pause').disabled=!activeHere;
     $('#stop').disabled=!activeHere;
     $('#report').disabled=!state.rows.length;
@@ -762,7 +913,7 @@
     $$('[data-tab]').forEach(b=>{
       const n=b.dataset.tab;
       if(n==='not_found')b.textContent='Не найдены ('+missing+')';
-      if(n==='failed')b.textContent='Ошибки удаления ('+error+')';
+      if(n==='failed')b.textContent='Ошибки обработки ('+error+')';
     });
     if(['queue','not_found','failed'].includes(activeTab))renderRows();
     if(activeTab==='log')renderLogs();
