@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Product Manager — Trash / Private
 // @namespace    https://steambuy.pro/
-// @version      2.2.0
+// @version      2.2.1
 // @description  Excel product_link → выбрать действие Trash или Private → открыть товар → применить → проверить; 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -31,7 +31,7 @@
 (() => {
   'use strict';
   // Keep v3 queues, but require explicit action selection after upgrading to v2.2.
-  const VERSION = '2.2.0';
+  const VERSION = '2.2.1';
   const DOMAIN = location.hostname;
   const PREFIX = 'sb-product-trash-v3:' + DOMAIN;
   const OLD_LEASE = 'sb-product-trash-v2:' + DOMAIN + ':lease';
@@ -170,10 +170,15 @@
       throw new Error('Заблокирован переход на сторонний URL.');
     }
     moving = true;
+    state.phase='open';
+    if (row) {
+      row.status='opening';
+      row.message='Переходим по product_link: '+u.href;
+    }
+    log('info','Открываем редактор по прямой ссылке: '+u.href,row);
     persist();
-    if (row) log('info', 'Переход: ' + u.pathname + u.search, row);
-    if (u.href === location.href) location.reload();
-    else location.assign(u.href);
+    // Direct top-frame navigation; preserve ALL WPML query parameters (lang, trid, update_needed...).
+    window.location.assign(u.href);
     setTimeout(() => {
       if (!moving || document.visibilityState === 'hidden') return;
       moving = false;
@@ -395,17 +400,41 @@
     const anchor=document.querySelector('#delete-action a.submitdelete.deletion')||
       document.querySelector('#delete-action a.submitdelete');
     const link=safeTrashLink(anchor,row);
-    if(!link)return finalize(row,'failed','Товар найден, но кнопка #delete-action → Move to Trash с проверяемым nonce отсутствует.');
+    if(!link) {
+      const raw=anchor?.getAttribute('href')||'';
+      let reason='Не найдена ссылка #delete-action → Move to Trash.';
+      if(anchor && raw) {
+        try{
+          const ref=new URL(raw,location.href),target=ref.searchParams.get('post');
+          if(target!==row.id)
+            reason='Ссылка редактора относится к товару ID '+row.id+
+              ', но Move to Trash ведёт на ID '+(target||'неизвестно')+
+              '. Удаление другого товара заблокировано.';
+          else reason='Найдена кнопка Move to Trash, но её URL некорректен или отсутствует _wpnonce.';
+        }catch{reason='Некорректный URL кнопки Move to Trash.';}
+      }
+      return finalize(row,'failed',reason);
+    }
     // A persisted verify checkpoint ensures a reload never clicks Move to Trash a second time.
-    state.phase='verify';state.pending={id:row.id,href:link,at:now()};
+    state.phase='verify';state.pending={id:row.id,action:'trash',href:link,at:now()};
     row.status='deleting';row.message='Нажимаем Move to Trash, затем проверяем.';
-    log('info','Товар '+(row.foundName||'без названия')+' (ID '+row.id+'). Клик по Move to Trash.',row);
-    try {anchor.click();}
-    catch(error) {return finalize(row,'failed','Ошибка нажатия Move to Trash: '+(error.message||error));}
-    // WordPress normally navigates. If an interceptor blocks navigation, verify without re-clicking.
+    log('info','ID '+row.id+': кнопка #delete-action → Move to Trash найдена. Открываем её WP URL.',row);
+    // WordPress button is a nonce-protected GET link. Navigating to its href is
+    // equivalent to clicking the link, but avoids JS handlers swallowing the click.
+    // State is saved BEFORE the request, so reloading never submits Trash again.
+    moving=true;
+    try {window.location.assign(link);}
+    catch(error){
+      moving=false;
+      return finalize(row,'failed','Ошибка перехода по Move to Trash: '+(error.message||error));
+    }
+    // If navigation is unexpectedly blocked, verify the outcome instead of retrying.
     setTimeout(()=>{
-      if(state.running&&ownLease()&&current()?.id===row.id&&state.phase==='verify'&&!busy&&!moving)
+      if(state.running&&ownLease()&&current()?.id===row.id&&state.phase==='verify'&&!busy){
+        moving=false;
+        log('warn','После запроса Trash страница не изменилась. Проверяем результат без повторного удаления.',row);
         verifyTrash(row);
+      }
     },4000);
   }
   function successRedirect(row) {
