@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Product Manager — Trash / Private
 // @namespace    https://steambuy.pro/
-// @version      2.2.3
+// @version      2.2.4
 // @description  Excel product_link → выбрать действие Trash или Private → открыть товар → применить → проверить; 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -31,7 +31,7 @@
 (() => {
   'use strict';
   // Keep v3 queues, but require explicit action selection after upgrading to v2.2.
-  const VERSION = '2.2.3';
+  const VERSION = '2.2.4';
   const DOMAIN = location.hostname;
   const PREFIX = 'sb-product-trash-v3:' + DOMAIN;
   const OLD_LEASE = 'sb-product-trash-v2:' + DOMAIN + ':lease';
@@ -43,7 +43,7 @@
   const MAX_LOGS = 1500;
   const PAGESIZE = 25;
   const OK = 'done';
-  const TERMINAL = new Set(['done', 'not_found', 'failed', 'skipped']);
+  const TERMINAL = new Set(['done', 'not_found', 'failed', 'unconfirmed', 'skipped']);
   const $ = (s, p = root) => p.querySelector(s);
   const $$ = (s, p = root) => Array.from(p.querySelectorAll(s));
   const clean = x => String(x == null ? '' : x).trim();
@@ -83,12 +83,12 @@
   let busy = false, moving = false, timer = null, heartbeat = null, expanded = false, dragging = null;
   const labels = {pending:'Ожидает', opening:'Открытие', deleting:'Удаляется',
     saving:'Сохранение', verifying:'Проверка',done:'Выполнено',
-    not_found:'Не найден', failed:'Ошибка обработки', skipped:'Пропущен'};
+    not_found:'Не найден', failed:'Ошибка обработки', unconfirmed:'Не подтверждено', skipped:'Пропущен'};
   const ACTION_LABELS = {trash:'Переместить в Trash', private:'Сделать приватным'};
   const actionName = action => ACTION_LABELS[action] || 'Не выбрано';
   const rowLabel = r => r.status==='done'
     ? (r.action==='private'?'Приватный':'Удалён') : (labels[r.status]||r.status);
-  const statuses = {done:'done', failed:'bad', not_found:'bad', skipped:'neutral',
+  const statuses = {done:'done', failed:'bad', not_found:'bad', unconfirmed:'uncertain', skipped:'neutral',
     opening:'work', deleting:'work', saving:'work', verifying:'work', pending:'neutral'};
   function persist() {
     state.updated = now();
@@ -234,7 +234,7 @@
     state.phase = 'idle';
     state.index = -1;
     state.runCount++;
-    log(status === 'done' ? 'ok' : (status==='not_found'?'warn':'error'), '['+actionName(row.action)+'] '+message, row);
+    log(status === 'done' ? 'ok' : (status==='not_found'||status==='unconfirmed'?'warn':'error'), '['+actionName(row.action)+'] '+message, row);
     if (state.mode === 'one' && state.runCount >= 1) {
       state.running = false;
       state.paused = true;
@@ -466,10 +466,10 @@
   function successRedirect(row) {
     const u=new URL(location.href);
     if(u.origin!==location.origin||u.pathname!=='/wp-admin/edit.php'||
-      u.searchParams.get('post_type')!=='product'||
       u.searchParams.get('trashed')!=='1')return false;
-    // WordPress may omit ids. If supplied, it must contain the exact expected ID.
     const ids=u.searchParams.get('ids');
+    // WordPress and WPML may omit post_type and ids from a normal redirect.
+    // Explicitly mismatched IDs are NEVER accepted.
     return !ids || ids.split(/[,\s]+/).includes(row.id);
   }
   async function fetchAdmin(url) {
@@ -486,40 +486,61 @@
     if(busy)return;
     busy=true;
     row.status='verifying';
-    row.message='Ожидаем подтверждение Move to Trash после перенаправления WordPress.';
+    row.message='Читаем подтверждение WordPress после Move to Trash.';
     persist();
     try {
-      if(successRedirect(row)) {
-        log('info','WordPress подтвердил Trash по URL: '+location.href,row);
-        finalize(row,'done','Перемещение ID '+row.id+' в Trash подтверждено перенаправлением WordPress.');
-        return;
-      }
-      // Read only the page already loaded by the browser. No fetch(), no Trash pagination.
       const u=new URL(location.href);
-      const notices=Array.from(document.querySelectorAll(
-        '#wpbody-content .notice-success, #wpbody-content .updated, #wpbody-content #message.updated'
-      ));
-      const notice=notices.map(n=>clean(n.textContent)).find(t=>
-        /(?:moved|sent|put).{0,90}trash|trash.{0,90}(?:moved|sent|put)|перемещен.{0,60}корзин|отправлен.{0,60}корзин/i.test(t)
-      );
       const ids=u.searchParams.get('ids');
       const wrongId=ids&&u.searchParams.get('trashed')==='1'&&
         !ids.split(/[,\s]+/).includes(row.id);
-      if(u.origin===location.origin&&u.pathname==='/wp-admin/edit.php'&&
-        u.searchParams.get('post_type')==='product'&&!wrongId&&notice) {
-        log('info','WordPress показал подтверждение Trash: '+notice.slice(0,180),row);
-        finalize(row,'done','WordPress подтвердил Move to Trash: '+notice.slice(0,180));
-        return;
+      if(wrongId){
+        return finalize(row,'failed','После Trash WordPress указал другой ID ('+ids+
+          '), а ожидался '+row.id+'. Повторное удаление запрещено.');
       }
-      const error=clean(document.querySelector('.wp-die-message, #loginform, #wpbody-content .notice-error, #wpbody-content .error')?.textContent);
-      const reason=error?'WordPress сообщает: '+error.slice(0,200):
-        wrongId?
-        'В ответе WordPress перечислены другие ID ('+ids+'), а ожидался '+row.id+'.':
-        'После нажатия Trash WordPress не подтвердил удаление товара '+row.id+'. URL: '+location.href;
-      finalize(row,'failed',reason+' Повторно Trash не нажимаем.');
+      const messages=Array.from(document.querySelectorAll(
+        '#wpbody-content .notice, #wpbody-content .updated, #wpbody-content #message, #wpbody-content .error, .wp-die-message'
+      )).map(node=>clean(node.textContent)).filter(Boolean);
+      const wpml=messages.filter(t=>
+        /you are trying to edit a translation that is currently in the process of being added using wpml/i.test(t)
+      );
+      // WPML warns about translation management, not whether Trash succeeded.
+      for(const warning of wpml)
+        log('warn','Предупреждение WPML (не ошибка Trash): '+warning.slice(0,220),row);
+      if(successRedirect(row)) {
+        return finalize(row,'done','WordPress подтвердил Move to Trash (trashed=1). ID '+row.id+'.');
+      }
+      const positive=messages.find(t=>
+        /(?:moved|sent|put).{0,90}trash|trash.{0,90}(?:moved|sent|put)|перемещен.{0,60}корзин|отправлен.{0,60}корзин/i.test(t)
+      );
+      const listPage=u.origin===location.origin&&u.pathname==='/wp-admin/edit.php'&&
+        [null,'product'].includes(u.searchParams.get('post_type'));
+      if(listPage&&positive)
+        return finalize(row,'done','WordPress подтвердил Trash уведомлением: '+positive.slice(0,170));
+      // After a successful WPML hook the normal trashed=1 parameters can be lost.
+      // Navigating back to the products list after the nonce-protected Trash URL
+      // is treated as completion, with a clear caveat in the operator log.
+      const realErrors=messages.filter(t=>!wpml.includes(t)&&
+        /(?:cannot|could not|not allowed|permission denied|invalid nonce|link you followed has expired|failed to|не удалось|нет прав|ошибка удален)/i.test(t)
+      );
+      if(listPage && !realErrors.length) {
+        log('warn','После Move to Trash открыт список товаров без trashed=1. WPML мог удалить параметры подтверждения; статус принят по перенаправлению, без проверки корзины.',row);
+        return finalize(row,'done','Переход на список товаров после Move to Trash выполнен. WordPress не показал стандартное подтверждение.');
+      }
+      const liveStatus=clean(document.querySelector('#post_status,input[name="post_status"]')?.value);
+      const liveId=clean(document.querySelector('#post_ID,input[name="post_ID"]')?.value);
+      if(liveId===row.id && liveStatus==='trash')
+        return finalize(row,'done','Страница WordPress показывает статус trash для ID '+row.id+'.');
+      if(realErrors.length)
+        return finalize(row,'failed','WordPress сообщил об ошибке удаления: '+realErrors[0].slice(0,200));
+      if(document.querySelector('#loginform'))
+        return finalize(row,'unconfirmed','Сессия WordPress завершилась после запроса Trash; результат неизвестен.');
+      return finalize(row,'unconfirmed',
+        'Команда Move to Trash отправлена, но ответ WordPress не содержит явного подтверждения. '+
+        (wpml.length?'Показано предупреждение WPML, которое не означает ошибку удаления. ':'')+
+        'Результат требует ручной проверки. URL: '+location.href);
     }catch(e) {
-      finalize(row,'failed','Ошибка чтения ответа WordPress после Trash: '+(e.message||e)+
-        '. Повторно Trash не нажимаем.');
+      finalize(row,'unconfirmed','Не удалось прочитать ответ WordPress после Trash: '+
+        (e.message||e)+'. Не повторяем удаление; результат требует проверки.');
     }finally {
       busy=false;
       if(state.running)schedule(Math.max(600,Number(state.settings.delay)*1000));
