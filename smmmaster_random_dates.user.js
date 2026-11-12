@@ -1,7 +1,9 @@
 // ==UserScript==
 // @name         SMMmaster — массовое изменение дат товаров по ID
 // @namespace    https://smmmaster.net/
-// @version      1.3.0
+// @version      1.3.1
+// @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/smmmaster_random_dates.user.js
+// @downloadURL  https://raw.githubusercontent.com/blackowl0192/script_folder/main/smmmaster_random_dates.user.js
 // @description  Читает ID из Excel/CSV/TXT, находит товар в WooCommerce, меняет дату через Quick Edit → Update; журнал, пауза и отчет.
 // @match        https://smmmaster.net/wp-admin/edit.php*
 // @match        https://www.smmmaster.net/wp-admin/edit.php*
@@ -181,7 +183,7 @@
   panel.innerHTML = `
     <div class="head" id="smm-grip">
       <div class="badge">◷</div>
-      <div><strong>SMMmaster · Даты товаров</strong><small>Quick Edit · без удаления · v1.3</small></div>
+      <div><strong>SMMmaster · Даты товаров</strong><small>Quick Edit · без удаления · v1.3.1</small></div>
       <div class="spacer"></div><button class="iconbtn" id="smm-collapse" title="Свернуть/развернуть" type="button">−</button>
     </div>
     <div class="main">
