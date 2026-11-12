@@ -502,16 +502,18 @@
       const notice=notices.map(n=>clean(n.textContent)).find(t=>
         /(?:moved|sent|put).{0,90}trash|trash.{0,90}(?:moved|sent|put)|перемещен.{0,60}корзин|отправлен.{0,60}корзин/i.test(t)
       );
+      const ids=u.searchParams.get('ids');
+      const wrongId=ids&&u.searchParams.get('trashed')==='1'&&
+        !ids.split(/[,\s]+/).includes(row.id);
       if(u.origin===location.origin&&u.pathname==='/wp-admin/edit.php'&&
-        u.searchParams.get('post_type')==='product'&&notice) {
+        u.searchParams.get('post_type')==='product'&&!wrongId&&notice) {
         log('info','WordPress показал подтверждение Trash: '+notice.slice(0,180),row);
         finalize(row,'done','WordPress подтвердил Move to Trash: '+notice.slice(0,180));
         return;
       }
       const error=clean(document.querySelector('.wp-die-message, #loginform, #wpbody-content .notice-error, #wpbody-content .error')?.textContent);
-      const ids=u.searchParams.get('ids');
       const reason=error?'WordPress сообщает: '+error.slice(0,200):
-        ids&&u.searchParams.get('trashed')==='1'?
+        wrongId?
         'В ответе WordPress перечислены другие ID ('+ids+'), а ожидался '+row.id+'.':
         'После нажатия Trash WordPress не подтвердил удаление товара '+row.id+'. URL: '+location.href;
       finalize(row,'failed',reason+' Повторно Trash не нажимаем.');
