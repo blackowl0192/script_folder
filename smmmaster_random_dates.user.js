@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SMMmaster — массовое изменение дат товаров по ID
 // @namespace    https://smmmaster.net/
-// @version      1.2.0
+// @version      1.3.0
 // @description  Читает ID из Excel/CSV/TXT, находит товар в WooCommerce, меняет дату через Quick Edit → Update; журнал, пауза и отчет.
 // @match        https://smmmaster.net/wp-admin/edit.php*
 // @match        https://www.smmmaster.net/wp-admin/edit.php*
@@ -19,8 +19,8 @@
 
   const STORAGE = 'smmmaster_dates_v1_state';
   const LAYOUT = 'smmmaster_dates_v1_layout';
-  const FROM = Date.UTC(2026, 0, 1, 0, 0, 0);
-  const TO = Date.UTC(2026, 10, 10, 23, 59, 59);
+  const DEFAULT_DATE_FROM = '2026-01-01';
+  const DEFAULT_DATE_TO = '2026-11-10';
   const MAX_STORED_LOG = 60;
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -35,6 +35,7 @@
     records: [], notes: [], lastMessage: 'Загрузите файл с ID',
     batchRemaining: null, dateCandidate: null, source: '',
     missStreak: 0, delayMs: 1300, dryRun: false,
+    dateFrom: DEFAULT_DATE_FROM, dateTo: DEFAULT_DATE_TO,
     lastChanged: Date.now()
   });
   let state;
@@ -65,10 +66,26 @@
   }
   const pad = v => String(v).padStart(2, '0');
   const isMidnight = date => date?.hh === '00' && date?.mn === '00';
+  function parseDateBoundary(value) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    const [year, month, day] = value.split('-').map(Number);
+    const ms = Date.UTC(year, month - 1, day);
+    const d = new Date(ms);
+    if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) return null;
+    return ms;
+  }
+  function dateRange(from = state.dateFrom, to = state.dateTo) {
+    const start = parseDateBoundary(from), end = parseDateBoundary(to);
+    if (start === null || end === null || start > end) return null;
+    return { start, end: end + 86400000 - 1000 };
+  }
+  const dateLabel = value => value.split('-').reverse().join('.');
   const randomDate = () => {
+    const range = dateRange();
+    if (!range) throw new Error('Некорректный диапазон дат. Укажите начало и конец периода.');
     let vals;
     do {
-      const n = Math.floor(FROM / 1000) + Math.floor(Math.random() * (Math.floor(TO / 1000) - Math.floor(FROM / 1000) + 1));
+      const n = Math.floor(range.start / 1000) + Math.floor(Math.random() * (Math.floor(range.end / 1000) - Math.floor(range.start / 1000) + 1));
       const d = new Date(n * 1000);
       vals = { aa: String(d.getUTCFullYear()), mm: pad(d.getUTCMonth()+1), jj: pad(d.getUTCDate()),
         hh: pad(d.getUTCHours()), mn: pad(d.getUTCMinutes()), ss: pad(d.getUTCSeconds()) };
@@ -124,8 +141,11 @@
   #smm-date-tool.collapsed{height:59px!important;min-height:59px!important;resize:none}
   #smm-date-tool.collapsed .main{display:none}
   #smm-date-tool label.caption{display:block;color:#aabdda;font-size:11px;text-transform:uppercase;letter-spacing:.6px;font-weight:700;margin:12px 0 6px}
-  #smm-date-tool textarea,#smm-date-tool input[type=number],#smm-date-tool select{width:100%;background:#121d30;border:1px solid #3a506e;border-radius:9px;color:white;padding:9px;font:inherit}
+  #smm-date-tool textarea,#smm-date-tool input[type=number],#smm-date-tool input[type=date],#smm-date-tool select{width:100%;background:#121d30;border:1px solid #3a506e;border-radius:9px;color:white;padding:9px;font:inherit}
   #smm-date-tool textarea{height:65px;min-height:50px;resize:vertical}
+  #smm-date-tool input[type=date]{min-width:0;color-scheme:dark}
+  #smm-date-tool .date-range{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}
+  #smm-date-tool .date-range label{display:block;color:var(--muted);font-size:11px}
   #smm-date-tool input[type=file]{position:absolute;left:-10000px;width:1px;height:1px}
   #smm-date-tool .row{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
   #smm-date-tool .row>*{flex:1 1 auto}
@@ -161,7 +181,7 @@
   panel.innerHTML = `
     <div class="head" id="smm-grip">
       <div class="badge">◷</div>
-      <div><strong>SMMmaster · Даты товаров</strong><small>Quick Edit · без удаления · v1.2</small></div>
+      <div><strong>SMMmaster · Даты товаров</strong><small>Quick Edit · без удаления · v1.3</small></div>
       <div class="spacer"></div><button class="iconbtn" id="smm-collapse" title="Свернуть/развернуть" type="button">−</button>
     </div>
     <div class="main">
@@ -172,11 +192,14 @@
       <div class="stats"><div class="stat"><strong id="smm-total">0</strong><span>Всего ID</span></div><div class="stat"><strong id="smm-ok">0</strong><span>Готово</span></div><div class="stat"><strong id="smm-missing">0</strong><span>Не найдены</span></div><div class="stat"><strong id="smm-error">0</strong><span>Ошибки</span></div></div>
       <div class="pills"><span id="smm-progress-label">0 / 0</span><span id="smm-progress-pct">0%</span></div><div class="bar"><div class="fill" id="smm-fill"></div></div>
       <div class="state" id="smm-state">Загрузите ID для начала</div>
+      <label class="caption">Диапазон случайных дат (включительно)</label>
+      <div class="date-range"><label>От<input id="smm-date-from" type="date" /></label><label>До<input id="smm-date-to" type="date" /></label></div>
+      <div id="smm-date-range-info" class="sub"></div>
       <div class="options"><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" id="smm-dry" /> Проверка поиска без изменения дат</label></div>
       <div class="row" style="margin-top:10px"><button id="smm-test" class="warn" type="button">Тест: 3 ID</button><button id="smm-start" class="primary" type="button">▶ Старт / продолжить</button><button id="smm-pause" type="button">Ⅱ Пауза</button></div>
       <div class="row" style="margin-top:7px"><button id="smm-report" type="button" class="green">↓ Отчет XLSX</button><button id="smm-missing-csv" type="button">↓ Нет ID (CSV)</button><button id="smm-reset" type="button" class="danger">↺ Сброс</button></div>
       <label class="caption">История операций</label><div class="log" id="smm-log" aria-live="polite"></div>
-      <div class="sub">Дата выбирается случайно с 01.01.2026 по 10.11.2026; время 00:00 исключено. Товары не удаляются. При 5 последовательных отсутствующих ID — автопауза.</div>
+      <div class="sub">Дата выбирается случайно в указанном диапазоне; время 00:00 исключено. Товары не удаляются. При 5 последовательных отсутствующих ID — автопауза.</div>
     </div>`;
   document.body.append(panel);
 
@@ -206,6 +229,13 @@
     $('#smm-state').textContent = `${m}${current ? ' · ID ' + current : ''}\n${state.lastMessage}`;
     $('#smm-dry').checked = !!state.dryRun;
     $('#smm-dry').disabled = state.status === 'running';
+    const rangeLocked = state.status === 'running';
+    $('#smm-date-from').disabled = rangeLocked;
+    $('#smm-date-to').disabled = rangeLocked;
+    const range = dateRange();
+    $('#smm-date-range-info').textContent = range
+      ? `Период: ${dateLabel(state.dateFrom)} — ${dateLabel(state.dateTo)} · обе даты включены`
+      : 'Ошибка: начальная дата не должна быть позже конечной.';
     $('#smm-pause').disabled = state.status !== 'running';
     $('#smm-test').disabled = !state.ids.length || state.status === 'running';
     $('#smm-start').disabled = !state.ids.length || state.status === 'running' || state.index >= state.ids.length;
@@ -223,7 +253,8 @@
     ids = unique(ids);
     if (!ids.length) { log('Не удалось найти числовые ID в выбранном столбце', 'error'); return; }
     if (state.records.length && !confirm('Заменить текущий список и сбросить историю? Перед заменой скачайте отчет, если он нужен.')) return;
-    state = emptyState();
+    const { dateFrom, dateTo } = state;
+    state = { ...emptyState(), dateFrom, dateTo };
     state.ids = ids;
     state.source = source;
     state.lastMessage = `Загружено ${ids.length} уникальных ID. Нажмите «Тест: 3 ID» или «Старт».`;
@@ -431,6 +462,7 @@
   function start(limit = null) {
     if (!state.ids.length) { log('Сначала загрузите список ID', 'error'); return; }
     if (state.index >= state.ids.length) { log('Все ID обработаны. Сбросьте или загрузите новый список.'); return; }
+    if (!dateRange()) { log('Укажите корректный диапазон дат: дата «От» не позже даты «До».', 'error'); return; }
     if (state.phase === 'saving') {
       if (!confirm('Последний Update мог выполниться, но ответ не был получен. Проверьте дату текущего товара на сайте. Повторно попробовать этот ID?')) return;
       state.phase = 'search'; state.dateCandidate = null;
@@ -439,7 +471,7 @@
     state.status = 'running';
     state.dryRun = $('#smm-dry').checked;
     save(); draw();
-    log(`${limit ? 'Тестовая партия: '+limit+' ID' : 'Запуск обработки'}. ${state.dryRun ? 'Только поиск; никаких обновлений' : 'Изменение дат включено'}`);
+    log(`${limit ? 'Тестовая партия: '+limit+' ID' : 'Запуск обработки'}. ${state.dryRun ? 'Только поиск; никаких обновлений' : 'Изменение дат включено: '+dateLabel(state.dateFrom)+' — '+dateLabel(state.dateTo)}`);
     tick();
   }
   function pause() {
@@ -496,6 +528,24 @@
     const chunks = $('#smm-paste').value.split(/[\n\r\t;,]+/);
     storeImported(chunks.map(toId).filter(Boolean), 'Вставленный текст');
   });
+  for (const [field, key] of [['smm-date-from', 'dateFrom'], ['smm-date-to', 'dateTo']]) {
+    const input = $('#' + field);
+    input.value = state[key];
+    input.addEventListener('change', () => {
+      if (state.status === 'running') { input.value = state[key]; return; }
+      const candidateFrom = key === 'dateFrom' ? input.value : state.dateFrom;
+      const candidateTo = key === 'dateTo' ? input.value : state.dateTo;
+      if (!dateRange(candidateFrom, candidateTo)) {
+        input.value = state[key];
+        log('Неверный диапазон: проверьте обе даты. Начало не может быть позже конца.', 'error');
+        return;
+      }
+      state[key] = input.value;
+      state.dateCandidate = null;
+      save(); draw();
+      log('Диапазон обновлён: ' + dateLabel(state.dateFrom) + ' — ' + dateLabel(state.dateTo));
+    });
+  }
   $('#smm-test').addEventListener('click', () => start(3));
   $('#smm-start').addEventListener('click', () => start(null));
   $('#smm-pause').addEventListener('click', pause);
@@ -508,7 +558,8 @@
   $('#smm-reset').addEventListener('click', () => {
     if (state.status === 'running') { log('Сначала поставьте скрипт на паузу', 'error'); return; }
     if (!confirm('Удалить загруженную очередь и историю результатов в этом браузере?')) return;
-    state = emptyState(); save(); draw();
+    const { dateFrom, dateTo } = state;
+    state = { ...emptyState(), dateFrom, dateTo }; save(); draw();
   });
   $('#smm-dry').addEventListener('change', e => { state.dryRun = e.target.checked; save(); });
   $('#smm-collapse').addEventListener('click', () => {
