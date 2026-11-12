@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Product Manager — Trash / Private
 // @namespace    https://steambuy.pro/
-// @version      2.2.1
+// @version      2.2.2
 // @description  Excel product_link → выбрать действие Trash или Private → открыть товар → применить → проверить; 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -31,7 +31,7 @@
 (() => {
   'use strict';
   // Keep v3 queues, but require explicit action selection after upgrading to v2.2.
-  const VERSION = '2.2.1';
+  const VERSION = '2.2.2';
   const DOMAIN = location.hostname;
   const PREFIX = 'sb-product-trash-v3:' + DOMAIN;
   const OLD_LEASE = 'sb-product-trash-v2:' + DOMAIN + ':lease';
@@ -88,13 +88,25 @@
   const ACTION_LABELS = {trash:'Переместить в Trash', private:'Сделать приватным'};
   const actionName = action => ACTION_LABELS[action] || 'Не выбрано';
   const rowLabel = r => r.status==='done'
-    ? (r.action==='private'?'Приватный':'Удалён') : rowLabel(r);
+    ? (r.action==='private'?'Приватный':'Удалён') : (labels[r.status]||r.status);
   const statuses = {done:'done', failed:'bad', not_found:'bad', skipped:'neutral',
     opening:'work', deleting:'work', saving:'work', verifying:'work', pending:'neutral'};
   function persist() {
     state.updated = now();
     GM_setValue(KEY, state);
-    render();
+    // A panel rendering failure must not block processing the product queue.
+    try { render(); }
+    catch (e) {
+      const message='Ошибка обновления панели: '+(e?.message||String(e));
+      console.error('[Product Manager]',message,e);
+      const last=state.logs[state.logs.length-1];
+      if(!last||last.message!==message){
+        state.logs.push({time:now(),level:'error',id:current()?.id||'',
+          row:current()?.excelRow||'',message});
+        if(state.logs.length>MAX_LOGS)state.logs.splice(0,state.logs.length-MAX_LOGS);
+        GM_setValue(KEY,state);
+      }
+    }
   }
   function log(level, message, row) {
     state.logs.push({time:now(),level, id:row ? row.id : '', row:row ? row.excelRow : '',message});
