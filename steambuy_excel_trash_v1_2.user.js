@@ -263,7 +263,7 @@
   function isProductEditor(row) {
     const u=new URL(location.href);
     return u.origin===location.origin&&u.pathname==='/wp-admin/post.php'&&
-      u.searchParams.get('action')==='edit'&&u.searchParams.get('post')===row.id;
+      [null,'edit'].includes(u.searchParams.get('action'))&&u.searchParams.get('post')===row.id;
   }
   function safeTrashLink(link,row) {
     if(!link)return null;
@@ -382,14 +382,26 @@
       return finalize(row,'not_found','По ссылке не открылся редактор: '+(message||'ошибка WordPress'));
     }
     const form=document.querySelector('form#post');
-    const actualId=clean(document.querySelector('#post_ID,input[name="post_ID"]')?.value);
+    const hiddenId=clean(document.querySelector('#post_ID,input[name="post_ID"]')?.value);
+    const bodyId=(document.body.className.match(/\bpostid-(\d+)\b/)||[])[1]||'';
+    const actualId=hiddenId||bodyId;
+    log('info','Карточка загружена: URL='+location.href+
+      '; post_ID='+(hiddenId||'—')+'; body ID='+(bodyId||'—')+
+      '; form#post='+(form?'да':'нет')+'; режим='+actionName(row.action)+'.',row);
     const type=clean(document.querySelector('#post_type,input[name="post_type"]')?.value)||
       (document.body.classList.contains('post-type-product')?'product':'');
     const status=clean(document.querySelector('#post_status,input[name="post_status"]')?.value);
-    if(!form||!actualId)return finalize(row,'not_found','Карточка не найдена: нет формы редактирования товара или post_ID.');
-    if(actualId!==row.id)return finalize(row,'failed','WordPress открыл другой ID: '+actualId+' (ожидался '+row.id+').');
-    if(type!=='product')return finalize(row,'failed','ID '+row.id+' не является товаром (тип: '+(type||'неизвестно')+').');
-    row.wpPostId=actualId;
+    if(hiddenId&&hiddenId!==row.id)return finalize(row,'failed',
+      'В редакторе обнаружен post_ID '+hiddenId+', а в Excel указан '+row.id+'.');
+    if(bodyId&&bodyId!==row.id)return finalize(row,'failed',
+      'WordPress body сообщает ID '+bodyId+', а в Excel указан '+row.id+'.');
+    // Some editor variants omit form#post or post_ID. The matched URL and a
+    // nonce-protected #delete-action link (checked below) still identify the item.
+    if(!actualId && !form && !document.querySelector('#delete-action'))
+      return finalize(row,'not_found','По ссылке не открылась карточка товара WordPress.');
+    if(type!=='product')return finalize(row,'failed',
+      'Карточка ID '+row.id+': не удалось подтвердить тип product (найден: '+(type||'неизвестно')+').');
+    row.wpPostId=actualId||row.id;
     row.foundName=clean(document.querySelector('#title,input[name="post_title"]')?.value)||
       clean(document.querySelector('.editor-post-title__input')?.textContent)||'';
     if(status==='trash') {
