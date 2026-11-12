@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Product Manager — Trash / Private
 // @namespace    https://steambuy.pro/
-// @version      2.2.0
+// @version      2.2.1
 // @description  Excel product_link → выбрать действие Trash или Private → открыть товар → применить → проверить; 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -31,7 +31,7 @@
 (() => {
   'use strict';
   // Keep v3 queues, but require explicit action selection after upgrading to v2.2.
-  const VERSION = '2.2.0';
+  const VERSION = '2.2.1';
   const DOMAIN = location.hostname;
   const PREFIX = 'sb-product-trash-v3:' + DOMAIN;
   const OLD_LEASE = 'sb-product-trash-v2:' + DOMAIN + ':lease';
@@ -122,12 +122,14 @@
   function claim() {
     const previous = GM_getValue(OLD_LEASE, null);
     if(previous && previous.until > Date.now()) {
+      log('warn','Старт заблокирован: предыдущая версия скрипта ещё работает в другой вкладке.');
       toast('Другая вкладка ещё работает на старой версии скрипта. Остановите её, прежде чем начинать.');
       return false;
     }
     const lease = GM_getValue(LEASE, null);
     if (lease && lease.until > Date.now() && lease.id !== tabId) {
-      toast('Удаление уже запущено в другой вкладке этого сайта. Сначала остановите его там.');
+      log('warn','Старт заблокирован: очередь управляется другой вкладкой этого сайта.');
+      toast('Обработка уже запущена в другой вкладке этого сайта. Сначала остановите её там.');
       return false;
     }
     GM_setValue(LEASE, {id:tabId, until:Date.now() + 25000});
@@ -170,16 +172,22 @@
       throw new Error('Заблокирован переход на сторонний URL.');
     }
     moving = true;
+    state.phase='open';
+    if (row) {
+      row.status='opening';
+      row.message='Переходим по product_link: '+u.href;
+    }
+    log('info','Открываем редактор по прямой ссылке: '+u.href,row);
     persist();
-    if (row) log('info', 'Переход: ' + u.pathname + u.search, row);
-    if (u.href === location.href) location.reload();
-    else location.assign(u.href);
+    // Direct top-frame navigation; preserve ALL WPML query parameters (lang, trid, update_needed...).
+    window.location.assign(u.href);
     setTimeout(() => {
       if (!moving || document.visibilityState === 'hidden') return;
       moving = false;
       state.running = false;
       state.paused = true;
       persist(); release();
+      log('error','Переход по product_link не завершился. Адрес: '+u.href,row);
       toast('Переход не завершился. Обработка остановлена; проверьте страницу и нажмите «Продолжить».');
     }, 18000);
   }
@@ -258,7 +266,7 @@
   function isProductEditor(row) {
     const u=new URL(location.href);
     return u.origin===location.origin&&u.pathname==='/wp-admin/post.php'&&
-      u.searchParams.get('action')==='edit'&&u.searchParams.get('post')===row.id;
+      [null,'edit'].includes(u.searchParams.get('action'))&&u.searchParams.get('post')===row.id;
   }
   function safeTrashLink(link,row) {
     if(!link)return null;
@@ -377,14 +385,26 @@
       return finalize(row,'not_found','По ссылке не открылся редактор: '+(message||'ошибка WordPress'));
     }
     const form=document.querySelector('form#post');
-    const actualId=clean(document.querySelector('#post_ID,input[name="post_ID"]')?.value);
+    const hiddenId=clean(document.querySelector('#post_ID,input[name="post_ID"]')?.value);
+    const bodyId=(document.body.className.match(/\bpostid-(\d+)\b/)||[])[1]||'';
+    const actualId=hiddenId||bodyId;
+    log('info','Карточка загружена: URL='+location.href+
+      '; post_ID='+(hiddenId||'—')+'; body ID='+(bodyId||'—')+
+      '; form#post='+(form?'да':'нет')+'; режим='+actionName(row.action)+'.',row);
     const type=clean(document.querySelector('#post_type,input[name="post_type"]')?.value)||
       (document.body.classList.contains('post-type-product')?'product':'');
     const status=clean(document.querySelector('#post_status,input[name="post_status"]')?.value);
-    if(!form||!actualId)return finalize(row,'not_found','Карточка не найдена: нет формы редактирования товара или post_ID.');
-    if(actualId!==row.id)return finalize(row,'failed','WordPress открыл другой ID: '+actualId+' (ожидался '+row.id+').');
-    if(type!=='product')return finalize(row,'failed','ID '+row.id+' не является товаром (тип: '+(type||'неизвестно')+').');
-    row.wpPostId=actualId;
+    if(hiddenId&&hiddenId!==row.id)return finalize(row,'failed',
+      'В редакторе обнаружен post_ID '+hiddenId+', а в Excel указан '+row.id+'.');
+    if(bodyId&&bodyId!==row.id)return finalize(row,'failed',
+      'WordPress body сообщает ID '+bodyId+', а в Excel указан '+row.id+'.');
+    // Some editor variants omit form#post or post_ID. The matched URL and a
+    // nonce-protected #delete-action link (checked below) still identify the item.
+    if(!actualId && !form && !document.querySelector('#delete-action'))
+      return finalize(row,'not_found','По ссылке не открылась карточка товара WordPress.');
+    if(type!=='product')return finalize(row,'failed',
+      'Карточка ID '+row.id+': не удалось подтвердить тип product (найден: '+(type||'неизвестно')+').');
+    row.wpPostId=actualId||row.id;
     row.foundName=clean(document.querySelector('#title,input[name="post_title"]')?.value)||
       clean(document.querySelector('.editor-post-title__input')?.textContent)||'';
     if(status==='trash') {
@@ -395,17 +415,41 @@
     const anchor=document.querySelector('#delete-action a.submitdelete.deletion')||
       document.querySelector('#delete-action a.submitdelete');
     const link=safeTrashLink(anchor,row);
-    if(!link)return finalize(row,'failed','Товар найден, но кнопка #delete-action → Move to Trash с проверяемым nonce отсутствует.');
+    if(!link) {
+      const raw=anchor?.getAttribute('href')||'';
+      let reason='Не найдена ссылка #delete-action → Move to Trash.';
+      if(anchor && raw) {
+        try{
+          const ref=new URL(raw,location.href),target=ref.searchParams.get('post');
+          if(target!==row.id)
+            reason='Ссылка редактора относится к товару ID '+row.id+
+              ', но Move to Trash ведёт на ID '+(target||'неизвестно')+
+              '. Удаление другого товара заблокировано.';
+          else reason='Найдена кнопка Move to Trash, но её URL некорректен или отсутствует _wpnonce.';
+        }catch{reason='Некорректный URL кнопки Move to Trash.';}
+      }
+      return finalize(row,'failed',reason);
+    }
     // A persisted verify checkpoint ensures a reload never clicks Move to Trash a second time.
-    state.phase='verify';state.pending={id:row.id,href:link,at:now()};
+    state.phase='verify';state.pending={id:row.id,action:'trash',href:link,at:now()};
     row.status='deleting';row.message='Нажимаем Move to Trash, затем проверяем.';
-    log('info','Товар '+(row.foundName||'без названия')+' (ID '+row.id+'). Клик по Move to Trash.',row);
-    try {anchor.click();}
-    catch(error) {return finalize(row,'failed','Ошибка нажатия Move to Trash: '+(error.message||error));}
-    // WordPress normally navigates. If an interceptor blocks navigation, verify without re-clicking.
+    log('info','ID '+row.id+': кнопка #delete-action → Move to Trash найдена. Открываем её WP URL.',row);
+    // WordPress button is a nonce-protected GET link. Navigating to its href is
+    // equivalent to clicking the link, but avoids JS handlers swallowing the click.
+    // State is saved BEFORE the request, so reloading never submits Trash again.
+    moving=true;
+    try {window.location.assign(link);}
+    catch(error){
+      moving=false;
+      return finalize(row,'failed','Ошибка перехода по Move to Trash: '+(error.message||error));
+    }
+    // If navigation is unexpectedly blocked, verify the outcome instead of retrying.
     setTimeout(()=>{
-      if(state.running&&ownLease()&&current()?.id===row.id&&state.phase==='verify'&&!busy&&!moving)
+      if(state.running&&ownLease()&&current()?.id===row.id&&state.phase==='verify'&&!busy){
+        moving=false;
+        log('warn','После запроса Trash страница не изменилась. Проверяем результат без повторного удаления.',row);
         verifyTrash(row);
+      }
     },4000);
   }
   function successRedirect(row) {
@@ -505,10 +549,10 @@
   function start(one=false) {
     if(busy||moving)return toast('Дождитесь завершения текущего действия.');
     readState();
-    if(!state.rows.length)return toast('Сначала загрузите Excel со столбцом product_link.');
+    if(!state.rows.length){log('error','Запуск невозможен: очередь product_link пуста.');return toast('Сначала загрузите Excel со столбцом product_link.');}
     const pendingAction=state.pending?.action || (state.pending && ['verify','verifying','deleting'].includes(state.phase)?'trash':'');
     const selected=clean(state.action);
-    if(!['trash','private'].includes(selected)&&!pendingAction)return toast('Сначала выберите действие: Trash или Private.');
+    if(!['trash','private'].includes(selected)&&!pendingAction){log('error','Запуск невозможен: оператор не выбрал Trash или Private.');return toast('Сначала выберите действие: Trash или Private.');}
     if(!claim())return;
     const ongoing=state.index>=0&&!!current()&&!TERMINAL.has(current().status);
     if(!ongoing){state.index=nextPending();state.phase='open';}
@@ -586,7 +630,7 @@
       $('#mapping').classList.remove('hidden');
       fillMapping();
       setTab('import');
-    } catch (e) {toast('Не удалось прочитать Excel: '+e.message);}
+    } catch (e) {log('error','Не удалось прочитать Excel: '+e.message);toast('Не удалось прочитать Excel: '+e.message);}
   }
   function importQueue(){
     if(!book||!canEdit())return;
