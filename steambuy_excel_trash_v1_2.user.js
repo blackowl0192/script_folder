@@ -122,12 +122,14 @@
   function claim() {
     const previous = GM_getValue(OLD_LEASE, null);
     if(previous && previous.until > Date.now()) {
+      log('warn','Старт заблокирован: предыдущая версия скрипта ещё работает в другой вкладке.');
       toast('Другая вкладка ещё работает на старой версии скрипта. Остановите её, прежде чем начинать.');
       return false;
     }
     const lease = GM_getValue(LEASE, null);
     if (lease && lease.until > Date.now() && lease.id !== tabId) {
-      toast('Удаление уже запущено в другой вкладке этого сайта. Сначала остановите его там.');
+      log('warn','Старт заблокирован: очередь управляется другой вкладкой этого сайта.');
+      toast('Обработка уже запущена в другой вкладке этого сайта. Сначала остановите её там.');
       return false;
     }
     GM_setValue(LEASE, {id:tabId, until:Date.now() + 25000});
@@ -185,6 +187,7 @@
       state.running = false;
       state.paused = true;
       persist(); release();
+      log('error','Переход по product_link не завершился. Адрес: '+u.href,row);
       toast('Переход не завершился. Обработка остановлена; проверьте страницу и нажмите «Продолжить».');
     }, 18000);
   }
@@ -546,10 +549,10 @@
   function start(one=false) {
     if(busy||moving)return toast('Дождитесь завершения текущего действия.');
     readState();
-    if(!state.rows.length)return toast('Сначала загрузите Excel со столбцом product_link.');
+    if(!state.rows.length){log('error','Запуск невозможен: очередь product_link пуста.');return toast('Сначала загрузите Excel со столбцом product_link.');}
     const pendingAction=state.pending?.action || (state.pending && ['verify','verifying','deleting'].includes(state.phase)?'trash':'');
     const selected=clean(state.action);
-    if(!['trash','private'].includes(selected)&&!pendingAction)return toast('Сначала выберите действие: Trash или Private.');
+    if(!['trash','private'].includes(selected)&&!pendingAction){log('error','Запуск невозможен: оператор не выбрал Trash или Private.');return toast('Сначала выберите действие: Trash или Private.');}
     if(!claim())return;
     const ongoing=state.index>=0&&!!current()&&!TERMINAL.has(current().status);
     if(!ongoing){state.index=nextPending();state.phase='open';}
@@ -627,7 +630,7 @@
       $('#mapping').classList.remove('hidden');
       fillMapping();
       setTab('import');
-    } catch (e) {toast('Не удалось прочитать Excel: '+e.message);}
+    } catch (e) {log('error','Не удалось прочитать Excel: '+e.message);toast('Не удалось прочитать Excel: '+e.message);}
   }
   function importQueue(){
     if(!book||!canEdit())return;
