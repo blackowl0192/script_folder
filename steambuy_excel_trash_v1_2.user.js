@@ -522,7 +522,7 @@
       const realErrors=messages.filter(t=>!wpml.includes(t)&&
         /(?:cannot|could not|not allowed|permission denied|invalid nonce|link you followed has expired|failed to|не удалось|нет прав|ошибка удален)/i.test(t)
       );
-      if(listPage && !realErrors.length) {
+      if(listPage && wpml.length && !realErrors.length) {
         log('warn','После Move to Trash открыт список товаров без trashed=1. WPML мог удалить параметры подтверждения; статус принят по перенаправлению, без проверки корзины.',row);
         return finalize(row,'done','Переход на список товаров после Move to Trash выполнен. WordPress не показал стандартное подтверждение.');
       }
@@ -705,6 +705,7 @@
     add('Удалено',state.rows.filter(r=>r.status==='done'&&r.action!=='private'));
     add('Приватные',state.rows.filter(r=>r.status==='done'&&r.action==='private'));
     add('Не найдено',state.rows.filter(r=>r.status==='not_found'));
+    add('Не подтверждено',state.rows.filter(r=>r.status==='unconfirmed'));
     add('Ошибки обработки',state.rows.filter(r=>r.status==='failed'));
     add('Пропущено',state.rows.filter(r=>r.status==='skipped'));
     const ws=XLSX.utils.aoa_to_sheet([['Время','Уровень','ID','Строка','Сообщение'],
@@ -729,10 +730,10 @@
     '.panel{position:fixed;right:22px;bottom:20px;width:710px;height:650px;max-width:calc(100vw - 24px);max-height:calc(100vh - 40px);background:white;box-shadow:0 18px 70px #0f233b40;border:1px solid #dae2ee;border-radius:16px;display:flex;flex-direction:column;overflow:hidden;resize:both;pointer-events:auto}',
     '.panel.full{inset:24px!important;width:auto!important;height:auto!important;max-width:none;max-height:none;resize:none}',
     '.head{background:#14263e;color:white;padding:16px 18px;display:flex;align-items:center;gap:12px;cursor:move;touch-action:none;user-select:none}.logo{height:36px;width:36px;background:#4275ed;display:grid;place-items:center;border-radius:10px;font-size:18px;font-weight:800}.head b{font-size:16px;letter-spacing:.2px}.head small{color:#b1c2d9;display:block;font-size:11px}.head .spacer{flex:1}.icon{background:#ffffff13;color:#fff;border-color:#ffffff22;padding:4px 9px}',
-    '.body{display:flex;flex-direction:column;min-height:0;flex:1}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:14px 16px 10px}.card{border:1px solid #e4eaf2;border-radius:10px;padding:9px 12px;background:#fafbfd}.card b{display:block;font-size:21px;line-height:1.25}.card span{font-size:11px;color:#68778c}.card.done b{color:#16835e}.card.bad b{color:#bd4f39}',
+    '.body{display:flex;flex-direction:column;min-height:0;flex:1}.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:14px 16px 10px}.card{border:1px solid #e4eaf2;border-radius:10px;padding:9px 12px;background:#fafbfd}.card b{display:block;font-size:21px;line-height:1.25}.card span{font-size:11px;color:#68778c}.card.done b{color:#16835e}.card.bad b{color:#bd4f39}',
     '.progress{height:5px;background:#eaf0f8;margin:0 16px;border-radius:5px;overflow:hidden}.progress i{height:100%;display:block;background:#4076ed;transition:width .3s}.current{padding:10px 16px;display:flex;gap:8px;align-items:center;color:#586b83;min-height:42px}.dot{height:8px;width:8px;background:#93a1b3;border-radius:50%;flex:none}.dot.run{background:#3974ee;box-shadow:0 0 0 4px #e5edff}.current span:last-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
     '.operation{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 16px 12px;padding:11px 12px;background:#f4f7fc;border:1px solid #dce6f3;border-radius:10px}.operation label{font-weight:750;font-size:12px;color:#31445c}.operation select{flex:1;min-width:200px}.operation small{flex-basis:100%;color:#6b7b92;font-size:11px}.actions{display:flex;gap:7px;flex-wrap:wrap;padding:0 16px 12px}.primary{background:#3468df!important;border-color:#3468df!important;color:white}.danger{color:#b04439;border-color:#eabcb6;background:#fff7f6}.tabs{display:flex;gap:18px;overflow:auto;flex-shrink:0;padding:0 16px;border-bottom:1px solid #e4eaf2}.tabs button{flex-shrink:0;border:0;border-radius:0;padding:10px 0;color:#7a889a;background:none;font-size:12px}.tabs button.on{color:#265cce;border-bottom:2px solid #3468df}',
-    '.view{padding:12px 16px;min-height:0;flex:1;overflow:auto}.hidden{display:none!important}.tools{display:flex;gap:8px;margin-bottom:10px}input,select{border:1px solid #dce3ed;border-radius:8px;background:#fff;padding:8px;color:#22324a;min-width:0}input[type=search]{flex:1}table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px}th{text-align:left;color:#7c899b;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:8px 6px;background:#f7f9fc;position:sticky;top:0}td{padding:10px 6px;border-bottom:1px solid #edf1f6;vertical-align:top}tr.currentrow{background:#eff5ff}td .title{font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}td small{color:#8290a2;display:block;font-size:10px;overflow-wrap:anywhere}.badge{font-size:10px;padding:3px 7px;border-radius:6px;display:inline-block;white-space:nowrap;background:#eef2f7;color:#62738a}.badge.done{background:#e4f5ec;color:#147c55}.badge.bad{background:#fff0e8;color:#b24b28}.badge.work{background:#e7efff;color:#2b62ce}',
+    '.view{padding:12px 16px;min-height:0;flex:1;overflow:auto}.hidden{display:none!important}.tools{display:flex;gap:8px;margin-bottom:10px}input,select{border:1px solid #dce3ed;border-radius:8px;background:#fff;padding:8px;color:#22324a;min-width:0}input[type=search]{flex:1}table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px}th{text-align:left;color:#7c899b;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:8px 6px;background:#f7f9fc;position:sticky;top:0}td{padding:10px 6px;border-bottom:1px solid #edf1f6;vertical-align:top}tr.currentrow{background:#eff5ff}td .title{font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}td small{color:#8290a2;display:block;font-size:10px;overflow-wrap:anywhere}.badge{font-size:10px;padding:3px 7px;border-radius:6px;display:inline-block;white-space:nowrap;background:#eef2f7;color:#62738a}.badge.done{background:#e4f5ec;color:#147c55}.badge.bad{background:#fff0e8;color:#b24b28}.badge.uncertain{background:#fff6dc;color:#956400}.badge.work{background:#e7efff;color:#2b62ce}',
     '.foot{padding:10px 16px;border-top:1px solid #e4eaf2;display:flex;align-items:center;gap:8px;background:#fafbfd;font-size:11px;color:#7a889a}.foot span:first-child{flex:1}.foot button{padding:4px 8px;font-size:11px}.empty{text-align:center;padding:28px 16px;color:#77869b}.empty b{display:block;color:#31435c;font-size:16px;margin-bottom:6px}.drop{border:2px dashed #c4d2e9;border-radius:12px;text-align:center;padding:20px;margin:4px 0 12px;background:#f7faff}.drop.over{border-color:#3468df;background:#eaf1ff}.drop label{cursor:pointer;color:#2b63d4;font-weight:700}.drop small{display:block;margin-top:5px;color:#7b8a9e}.mapping{display:grid;grid-template-columns:120px 1fr;gap:8px;align-items:center}.mapping label{color:#61728a}.hint{font-size:12px;color:#6d7e94;margin:10px 0}.logline{display:grid;grid-template-columns:80px 80px 1fr;gap:8px;padding:8px 0;border-bottom:1px solid #edf1f6;font-size:11px;overflow-wrap:anywhere}.logline.error{color:#a83f2f}.logline.ok{color:#147c55}.logline.warn{color:#955e0d}',
     '.pill{position:fixed;right:22px;bottom:20px;border-radius:14px;background:#14263e;color:#fff;padding:12px 18px;box-shadow:0 8px 30px #0f233b40;pointer-events:auto}.pill:hover{background:#24466b;color:white}.notice{position:absolute;bottom:54px;left:16px;right:16px;z-index:8;padding:12px;background:#fff7e7;border:1px solid #e3cdab;border-radius:10px;color:#75551f;box-shadow:0 6px 20px #0002}.notice button{float:right;padding:0 6px;margin-right:5px}.help h3{font-size:13px;color:#263d5c}.help p,.help li{font-size:12px;color:#61728a}.help ol{padding-left:20px}.setting{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #edf1f6}.setting input[type=number]{width:80px}.setting small{display:block;color:#7a899c}',
     '@media(max-width:550px){.panel{right:8px;bottom:8px;max-width:calc(100vw - 16px)}.stats{gap:4px}.card{padding:7px}.tabs{gap:12px}.actions button{font-size:11px;padding:7px}}'
@@ -753,7 +754,8 @@
       '<div class="card"><b id="total">0</b><span>Товаров в файле</span></div>'+
       '<div class="card done"><b id="done">0</b><span id="doneLabel">Выполнено</span></div>'+
       '<div class="card bad"><b id="missing">0</b><span>Не найдено</span></div>'+
-      '<div class="card bad"><b id="errors">0</b><span>Ошибки</span></div></div>'+
+      '<div class="card bad"><b id="errors">0</b><span>Ошибки</span></div>'+
+      '<div class="card"><b id="unconfirmed">0</b><span>Без подтверждения</span></div></div>'+
       '<div class="progress"><i id="bar"></i></div>'+
       '<div class="current"><i class="dot" id="dot"></i><span id="current">Загрузите Excel с товарами</span></div>'+
       '<div class="operation"><label for="operation">Действие с товарами</label>'+
@@ -767,7 +769,8 @@
       '<nav class="tabs">'+
       '<button data-tab="queue" class="on">Очередь</button>'+
       '<button data-tab="not_found">Не найдены</button>'+
-      '<button data-tab="failed">Ошибки обработки</button>'+
+      '<button data-tab="failed">Ошибки обработки</button>'+ 
+      '<button data-tab="unconfirmed">Не подтверждено</button>'+
       '<button data-tab="log">Журнал</button>'+
       '<button data-tab="import">Импорт Excel</button>'+
       '<button data-tab="help">Как работать</button></nav>'+
@@ -777,6 +780,7 @@
       '<option value="done">Выполнены</option><option value="skipped">Пропущено</option></select></div><div id="rows"></div></div>'+
       '<div class="view hidden" id="not_found"><div id="missingRows"></div></div>'+
       '<div class="view hidden" id="failed"><div id="failedRows"></div></div>'+
+      '<div class="view hidden" id="unconfirmed"><div id="unconfirmedRows"></div></div>'+
       '<div class="view hidden" id="log"><div class="tools"><button id="downloadLog">↓ Скачать журнал TXT</button><span class="hint">Последние 1500 событий</span></div><div id="logs"></div></div>'+
       '<div class="view hidden" id="import"><div class="tools"><button class="danger" id="reset">Сбросить очередь и журнал</button></div>'+
       '<div class="drop" id="drop"><label for="file">Выбрать Excel / CSV</label><input type="file" id="file" accept=".xlsx,.xls,.csv" hidden>'+
@@ -798,7 +802,7 @@
       '<li>После теста нажмите «Начать» для обработки остальных ссылок.</li>'+
       '</ol><h3>Режим: Удалить товар</h3><p>Открывается product_link → Move to Trash → перенаправление WordPress → запись результата → следующая ссылка. Без дополнительных запросов к карточке и страницам корзины.</p>'+
       '<h3>Режим: Сделать приватным</h3><p>Открывается product_link → Edit visibility → Private → OK → Update → серверное подтверждение статуса private. Если статус уже private, обновление пропускается.</p>'+
-      '<h3>Ошибки и результаты</h3><p>Ссылка не открылась — запись «Не найдены». Нет нужных элементов WordPress или сохранение не подтвердилось — «Ошибки обработки». Каждый случай фиксируется в журнале и очередь переходит к следующей ссылке.</p>'+
+      '<h3>Ошибки и результаты</h3><p>Предупреждения WPML о переводе не считаются ошибкой Trash. Успех подтверждается перенаправлением или уведомлением WordPress. Если подтверждения нет — «Не подтверждено», а не ложная «Ошибка удаления». Без дополнительных запросов к корзине.</p>'+
       '<p>При истечении авторизации скрипт останавливает обработку до входа. Повторный Trash/Update после перезагрузки не выполняется.</p>'+
       '<p>Выбранное действие закрепляется за очередью после запуска. Для другого действия создайте новую очередь из Excel.</p></div>'+
       '<footer class="foot"><span id="footer">Очередь сохраняется локально в Tampermonkey</span>'+
@@ -897,7 +901,7 @@
   }
   function setTab(tab) {
     activeTab=tab;page=0;
-    for(const name of ['queue','not_found','failed','log','import','help'])
+    for(const name of ['queue','not_found','failed','unconfirmed','log','import','help'])
       $('#'+name).classList.toggle('hidden',name!==tab);
     $$('[data-tab]').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
     render();
@@ -905,6 +909,7 @@
   function subset() {
     if (activeTab==='not_found') return state.rows.filter(x=>x.status==='not_found');
     if (activeTab==='failed') return state.rows.filter(x=>x.status==='failed');
+    if (activeTab==='unconfirmed') return state.rows.filter(x=>x.status==='unconfirmed');
     return state.rows.filter(x=>{
       const matches=filter==='all'||(filter==='pending' ? ['pending','opening','deleting','saving','verifying'].includes(x.status) : x.status===filter);
       return matches && normalized(x.id+' '+x.productLink+' '+x.foundName).includes(normalized(search));
@@ -912,13 +917,13 @@
   }
   function renderRows() {
     if(!root)return;
-    if(!['queue','not_found','failed'].includes(activeTab))return;
+    if(!['queue','not_found','failed','unconfirmed'].includes(activeTab))return;
     const rows=subset();
     const pages=Math.max(1,Math.ceil(rows.length/PAGESIZE));
     page=Math.min(page,pages-1);
     $('#pages').textContent=(page+1)+' / '+pages;
     $('#prev').disabled=page===0;$('#next').disabled=page>=pages-1;
-    const target=activeTab==='queue' ? $('#rows') : activeTab==='not_found' ? $('#missingRows') : $('#failedRows');
+    const target=activeTab==='queue' ? $('#rows') : activeTab==='not_found' ? $('#missingRows') : activeTab==='unconfirmed' ? $('#unconfirmedRows') : $('#failedRows');
     if(!rows.length){
       target.innerHTML='<div class="empty"><b>Список пуст</b>'+
         (activeTab==='queue'?'Импортируйте Excel или измените фильтр.':'Здесь пока нет записей.')+'</div>';
@@ -943,15 +948,16 @@
   function render() {
     if(!root)return;
     const count=s=>state.rows.filter(r=>r.status===s).length;
-    const done=count('done'),missing=count('not_found'),error=count('failed');
+    const done=count('done'),missing=count('not_found'),error=count('failed'),unconfirmed=count('unconfirmed');
     const pending=count('pending')+count('opening')+count('deleting')+count('saving')+count('verifying');
     $('#total').textContent=state.rows.length;
     $('#done').textContent=done;
     $('#doneLabel').textContent=state.action==='private'?'Приватных':'Выполнено';
     $('#missing').textContent=missing;
     $('#errors').textContent=error;
+    $('#unconfirmed').textContent=unconfirmed;
     $('#bar').style.width=(state.rows.length?
-      Math.round(100*(done+missing+error+count('skipped'))/state.rows.length):0)+'%';
+      Math.round(100*(done+missing+error+unconfirmed+count('skipped'))/state.rows.length):0)+'%';
     const row=current();
     $('#current').textContent=state.running?
       'Обработка ссылки ID '+(row?.id||'—')+' · '+(labels[row?.status]||'Открытие'):
@@ -983,12 +989,13 @@
       const n=b.dataset.tab;
       if(n==='not_found')b.textContent='Не найдены ('+missing+')';
       if(n==='failed')b.textContent='Ошибки обработки ('+error+')';
+      if(n==='unconfirmed')b.textContent='Не подтверждено ('+unconfirmed+')';
     });
-    if(['queue','not_found','failed'].includes(activeTab))renderRows();
+    if(['queue','not_found','failed','unconfirmed'].includes(activeTab))renderRows();
     if(activeTab==='log')renderLogs();
-    $('.foot #prev').classList.toggle('hidden',!['queue','not_found','failed'].includes(activeTab));
-    $('.foot #next').classList.toggle('hidden',!['queue','not_found','failed'].includes(activeTab));
-    $('.foot #pages').classList.toggle('hidden',!['queue','not_found','failed'].includes(activeTab));
+    $('.foot #prev').classList.toggle('hidden',!['queue','not_found','failed','unconfirmed'].includes(activeTab));
+    $('.foot #next').classList.toggle('hidden',!['queue','not_found','failed','unconfirmed'].includes(activeTab));
+    $('.foot #pages').classList.toggle('hidden',!['queue','not_found','failed','unconfirmed'].includes(activeTab));
   }
   // Do not resume unattended after a WordPress login redirect.
   if(location.pathname.endsWith('/wp-login.php')) {
