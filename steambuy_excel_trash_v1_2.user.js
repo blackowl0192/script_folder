@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Product Manager — Trash / Private
 // @namespace    https://steambuy.pro/
-// @version      2.2.2
+// @version      2.2.3
 // @description  Excel product_link → выбрать действие Trash или Private → открыть товар → применить → проверить; 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -31,7 +31,7 @@
 (() => {
   'use strict';
   // Keep v3 queues, but require explicit action selection after upgrading to v2.2.
-  const VERSION = '2.2.2';
+  const VERSION = '2.2.3';
   const DOMAIN = location.hostname;
   const PREFIX = 'sb-product-trash-v3:' + DOMAIN;
   const OLD_LEASE = 'sb-product-trash-v2:' + DOMAIN + ':lease';
@@ -40,7 +40,6 @@
   const LAYOUT = PREFIX + ':layout';
   const TAB = PREFIX + ':tab-id';
   const LIST = location.origin + '/wp-admin/edit.php?post_type=product';
-  const MAX_VERIFY_PAGES = 15;
   const MAX_LOGS = 1500;
   const PAGESIZE = 25;
   const OK = 'done';
@@ -444,7 +443,7 @@
     }
     // A persisted verify checkpoint ensures a reload never clicks Move to Trash a second time.
     state.phase='verify';state.pending={id:row.id,action:'trash',href:link,at:now()};
-    row.status='deleting';row.message='Нажимаем Move to Trash, затем проверяем.';
+    row.status='deleting';row.message='Отправляем Move to Trash и ждём перенаправление WordPress.';
     log('info','ID '+row.id+': кнопка #delete-action → Move to Trash найдена. Открываем её WP URL.',row);
     // WordPress button is a nonce-protected GET link. Navigating to its href is
     // equivalent to clicking the link, but avoids JS handlers swallowing the click.
@@ -459,16 +458,19 @@
     setTimeout(()=>{
       if(state.running&&ownLease()&&current()?.id===row.id&&state.phase==='verify'&&!busy){
         moving=false;
-        log('warn','После запроса Trash страница не изменилась. Проверяем результат без повторного удаления.',row);
+        log('warn','После Trash страница не изменилась. Проверяем только ответ на текущей странице.',row);
         verifyTrash(row);
       }
     },4000);
   }
   function successRedirect(row) {
     const u=new URL(location.href);
-    if(u.origin!==location.origin||!u.pathname.endsWith('/wp-admin/edit.php')||
+    if(u.origin!==location.origin||u.pathname!=='/wp-admin/edit.php'||
+      u.searchParams.get('post_type')!=='product'||
       u.searchParams.get('trashed')!=='1')return false;
-    return (u.searchParams.get('ids')||'').split(/[,\s]+/).includes(row.id);
+    // WordPress may omit ids. If supplied, it must contain the exact expected ID.
+    const ids=u.searchParams.get('ids');
+    return !ids || ids.split(/[,\s]+/).includes(row.id);
   }
   async function fetchAdmin(url) {
     const response=await fetch(url,{credentials:'same-origin',redirect:'follow',cache:'no-store'});
@@ -480,57 +482,45 @@
     if(doc.querySelector('#loginform'))throw new Error('Требуется войти в WordPress.');
     return doc;
   }
-  async function verifyTrash(row) {
+  function verifyTrash(row) {
     if(busy)return;
-    busy=true;row.status='verifying';row.message='Проверка без повторного нажатия Trash.';
+    busy=true;
+    row.status='verifying';
+    row.message='Ожидаем подтверждение Move to Trash после перенаправления WordPress.';
     persist();
     try {
-      if(successRedirect(row)){
-        finalize(row,'done','WordPress подтвердил Trash через redirect (trashed=1, ids='+row.id+').');
+      if(successRedirect(row)) {
+        log('info','WordPress подтвердил Trash по URL: '+location.href,row);
+        finalize(row,'done','Перемещение ID '+row.id+' в Trash подтверждено перенаправлением WordPress.');
         return;
       }
-      // Direct edit-page check does not use product search.
-      try{
-        const doc=await fetchAdmin(row.productLink);
-        const die=clean(doc.querySelector('.wp-die-message')?.textContent);
-        if(die&&/trash|корзин/i.test(die)){
-          finalize(row,'done','WordPress сообщает, что товар в корзине.');
-          return;
-        }
-        const editId=clean(doc.querySelector('#post_ID,input[name="post_ID"]')?.value);
-        const status=clean(doc.querySelector('#post_status,input[name="post_status"]')?.value);
-        if(editId===row.id&&status==='trash'){
-          finalize(row,'done','Проверен статус товара: trash.');
-          return;
-        }
-      }catch(e){
-        log('warn','Проверка карточки: '+e.message,row);
-        if(/сессия|войти/i.test(e.message))throw e;
+      // Read only the page already loaded by the browser. No fetch(), no Trash pagination.
+      const u=new URL(location.href);
+      const notices=Array.from(document.querySelectorAll(
+        '#wpbody-content .notice-success, #wpbody-content .updated, #wpbody-content #message.updated'
+      ));
+      const notice=notices.map(n=>clean(n.textContent)).find(t=>
+        /(?:moved|sent|put).{0,90}trash|trash.{0,90}(?:moved|sent|put)|перемещен.{0,60}корзин|отправлен.{0,60}корзин/i.test(t)
+      );
+      if(u.origin===location.origin&&u.pathname==='/wp-admin/edit.php'&&
+        u.searchParams.get('post_type')==='product'&&notice) {
+        log('info','WordPress показал подтверждение Trash: '+notice.slice(0,180),row);
+        finalize(row,'done','WordPress подтвердил Move to Trash: '+notice.slice(0,180));
+        return;
       }
-      // Fallback enumerates the Trash table; never invokes the WordPress search field.
-      for(let p=1;p<=MAX_VERIFY_PAGES;p++){
-        const u=new URL('/wp-admin/edit.php',location.origin);
-        u.searchParams.set('post_type','product');
-        u.searchParams.set('post_status','trash');
-        u.searchParams.set('paged',String(p));
-        const doc=await fetchAdmin(u.href);
-        if(!doc.querySelector('#the-list'))throw new Error('Нет таблицы товаров в корзине.');
-        if(doc.getElementById('post-'+row.id)){
-          finalize(row,'done','Товар '+row.id+' найден в корзине, страница '+p+'.');
-          return;
-        }
-        if(!doc.querySelector('.tablenav-pages a.next-page:not(.disabled)'))break;
-        if(p===MAX_VERIFY_PAGES)throw new Error('Лимит просмотра корзины: '+MAX_VERIFY_PAGES+' страниц.');
-      }
-      finalize(row,'failed','После Move to Trash товар не подтверждён в корзине. Автоматический повтор запрещён.');
-    }catch(e){
-      finalize(row,'failed','Не удалось проверить удаление: '+e.message+'. Повторный Trash не выполняется.');
-      if(/сессия|войти/i.test(e.message)){
-        state.running=false;state.paused=true;persist();release();
-      }
-    }finally{
+      const error=clean(document.querySelector('.wp-die-message, #loginform, #wpbody-content .notice-error, #wpbody-content .error')?.textContent);
+      const ids=u.searchParams.get('ids');
+      const reason=error?'WordPress сообщает: '+error.slice(0,200):
+        ids&&u.searchParams.get('trashed')==='1'?
+        'В ответе WordPress перечислены другие ID ('+ids+'), а ожидался '+row.id+'.':
+        'После нажатия Trash WordPress не подтвердил удаление товара '+row.id+'. URL: '+location.href;
+      finalize(row,'failed',reason+' Повторно Trash не нажимаем.');
+    }catch(e) {
+      finalize(row,'failed','Ошибка чтения ответа WordPress после Trash: '+(e.message||e)+
+        '. Повторно Trash не нажимаем.');
+    }finally {
       busy=false;
-      if(state.running)schedule(Math.max(700,Number(state.settings.delay)*1000));
+      if(state.running)schedule(Math.max(600,Number(state.settings.delay)*1000));
     }
   }
   function runStep() {
@@ -783,7 +773,7 @@
       '<li>Загрузите Excel. Вверху панели выберите «Удалить товар (Move to Trash)» или «Сделать приватным».</li>'+
       '<li>Нажмите «Тест: 1 товар» для пробного применения выбранного действия к одному товару.</li>'+
       '<li>После теста нажмите «Начать» для обработки остальных ссылок.</li>'+
-      '</ol><h3>Режим: Удалить товар</h3><p>Открывается product_link → проверяется ID и тип product → нажимается #delete-action → Move to Trash → результат проверяется без повторного клика.</p>'+
+      '</ol><h3>Режим: Удалить товар</h3><p>Открывается product_link → Move to Trash → перенаправление WordPress → запись результата → следующая ссылка. Без дополнительных запросов к карточке и страницам корзины.</p>'+
       '<h3>Режим: Сделать приватным</h3><p>Открывается product_link → Edit visibility → Private → OK → Update → серверное подтверждение статуса private. Если статус уже private, обновление пропускается.</p>'+
       '<h3>Ошибки и результаты</h3><p>Ссылка не открылась — запись «Не найдены». Нет нужных элементов WordPress или сохранение не подтвердилось — «Ошибки обработки». Каждый случай фиксируется в журнале и очередь переходит к следующей ссылке.</p>'+
       '<p>При истечении авторизации скрипт останавливает обработку до входа. Повторный Trash/Update после перезагрузки не выполняется.</p>'+
