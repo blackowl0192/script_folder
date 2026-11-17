@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Product Manager — Trash / Private
 // @namespace    https://steambuy.pro/
-// @version      2.2.4
+// @version      2.3.0
 // @description  Excel product_link → выбрать действие Trash или Private → открыть товар → применить → проверить; 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -31,7 +31,7 @@
 (() => {
   'use strict';
   // Keep v3 queues, but require explicit action selection after upgrading to v2.2.
-  const VERSION = '2.2.4';
+  const VERSION = '2.3.0';
   const DOMAIN = location.hostname;
   const PREFIX = 'sb-product-trash-v3:' + DOMAIN;
   const OLD_LEASE = 'sb-product-trash-v2:' + DOMAIN + ':lease';
@@ -52,18 +52,18 @@
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const normalized = x => clean(x).normalize('NFKC').toLowerCase().replace(/\s+/g, ' ');
   const now = () => new Date().toISOString();
-  const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
   const tabId = sessionStorage.getItem(TAB) || (Date.now().toString(36) + Math.random().toString(36).slice(2));
   sessionStorage.setItem(TAB, tabId);
+  const PAGE_INSTANCE = Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
   const defaults = () => ({
     v: 3, schema: 2, action: '', filename: '', sheet: '', rows: [], logs: [], index: -1,
     phase: 'idle', running: false, paused: false, mode: 'batch', runCount: 0,
     owner: '', pending: null,
-    settings: { delay: 2, stopOnError: false }, updated: '', started: ''
+    settings: { delay: 1 }, updated: '', started: ''
   });
   let state = GM_getValue(KEY, null) || defaults();
   if (state.v !== 3 || !Array.isArray(state.rows)) state = defaults();
-  state.settings = Object.assign({delay: 2}, state.settings || {});
+  state.settings = Object.assign({delay: 1}, state.settings || {});
   // Older v2.1 runs were delete-only. Pause on upgrade rather than silently continuing Trash.
   if(state.schema !== 2){
     const currentRow=state.rows[state.index];
@@ -78,7 +78,7 @@
       row:currentRow?.excelRow||'',message:'Обновление v2.2: автоматическая работа приостановлена. Выберите действие перед продолжением.'});
     GM_setValue(KEY,state);
   }
-  let root, panel, book = null, fileName = '';
+  let root, panel, book = null, fileName = '', excelColumn = -1;
   let activeTab = 'queue', filter = 'all', search = '', page = 0;
   let busy = false, moving = false, timer = null, heartbeat = null, expanded = false, dragging = null;
   const labels = {pending:'Ожидает', opening:'Открытие', deleting:'Удаляется',
@@ -290,8 +290,11 @@
   }
   // WordPress Classic Editor: Edit visibility -> Private -> OK -> Update.
   function makePrivate(row,status) {
-    if(status==='private')
-      return finalize(row,'done','Товар уже приватный. Update не требуется.');
+    // This is a freshly loaded editor page: radio visibility is authoritative
+    // even when WPML keeps the hidden #post_status field at "publish".
+    const before=privateVisibility(document);
+    if(before.id===row.id && (before.private || status==='private'))
+      return finalize(row,'done','Товар уже приватный (Visibility: Private). Update не требуется.');
     const edit=document.querySelector('a.edit-visibility[href="#visibility"]');
     const radio=document.querySelector('#visibility-radio-private');
     const ok=document.querySelector('a.save-post-visibility[href="#visibility"]');
@@ -316,7 +319,7 @@
     }
     // Persist BEFORE Update: after a page reload, only verification is permitted.
     state.phase='verify-private';
-    state.pending={id:row.id,action:'private',at:now()};
+    state.pending={id:row.id,action:'private',pageInstance:PAGE_INSTANCE,at:now()};
     row.status='saving';
     row.message='Private выбран и подтверждён через OK; выполняется Update.';
     log('info','ID '+row.id+': выбран Private, подтверждено OK. Нажимаем Update.',row);
@@ -332,48 +335,70 @@
         state.phase==='verify-private'&&!busy&&!moving)verifyPrivate(row);
     },4500);
   }
+  // Classic Editor / WPML: post_status can remain "publish" for a Private
+  // product. Prefer the saved Visibility controls over the hidden status field.
+  function privateVisibility(doc) {
+    const get=selector=>doc.querySelector(selector);
+    const id=clean(get('#post_ID,input[name="post_ID"]')?.value)||
+      (clean(doc.body?.className).match(/\bpostid-(\d+)\b/)||[])[1]||'';
+    const type=clean(get('#post_type,input[name="post_type"]')?.value)||
+      (doc.body?.classList?.contains('post-type-product')?'product':'');
+    const status=clean(get('#post_status,input[name="post_status"]')?.value);
+    const originalStatus=clean(get('#original_post_status,input[name="original_post_status"]')?.value);
+    const radio=get('#visibility-radio-private');
+    const publicRadio=get('#visibility-radio-public');
+    const passwordRadio=get('#visibility-radio-password');
+    const display=clean(get('#post-visibility-display')?.textContent);
+    const radioPrivate=radio?.checked===true;
+    const publicSelected=publicRadio?.checked===true || passwordRadio?.checked===true;
+    const displayPrivate=/(?:\bprivate\b|приватн|личн(?:ое|ая)|закрыт)/i.test(display);
+    const statusPrivate=status==='private' || originalStatus==='private';
+    const isPrivate=!publicSelected && (statusPrivate || radioPrivate ||
+      (displayPrivate && !radio));
+    return {id,type,status,originalStatus,radioPrivate,display,isPrivate};
+  }
   async function verifyPrivate(row) {
     if(busy)return;
     busy=true;
     row.status='verifying';
-    row.message='Проверка статуса Private после Update (без повторного сохранения).';
+    row.message='Быстрая проверка Visibility: Private после Update.';
     persist();
-    try{
-      // Fetch a fresh WordPress editor response; current page may still contain unsaved changes.
-      for(let attempt=1;attempt<=3;attempt++){
-        const doc=await fetchAdmin(row.productLink);
-        const error=doc.querySelector('.wp-die-message');
-        if(error)throw new Error('WordPress вернул ошибку: '+clean(error.textContent).slice(0,180));
-        const id=clean(doc.querySelector('#post_ID,input[name="post_ID"]')?.value);
-        const type=clean(doc.querySelector('#post_type,input[name="post_type"]')?.value)||
-          (doc.body?.classList.contains('post-type-product')?'product':'');
-        const savedStatus=clean(doc.querySelector('#post_status,input[name="post_status"]')?.value)||
-          clean(doc.querySelector('#original_post_status,input[name="original_post_status"]')?.value);
-        if(id!==row.id || type!=='product'){
-          throw new Error('Не удалось удостовериться в ID/типе товара после Update. Получено ID='+
-            (id||'—')+', тип='+(type||'—')+'.');
-        }
-        if(savedStatus==='private'){
-          return finalize(row,'done','Товар ID '+row.id+' успешно сохранён как Private.');
-        }
-        if(attempt<3){
-          log('warn','ID '+row.id+': статус после Update = '+(savedStatus||'неизвестен')+
-            '. Повторная проверка без нажатия Update.',row);
-          await delay(1100);
-        }else{
-          return finalize(row,'failed','Private не подтверждён после Update. Текущий статус: '+
-            (savedStatus||'неизвестен')+'. Повторный Update автоматически не выполняется.');
-        }
-      }
-    }catch(e){
-      finalize(row,'failed','Ошибка проверки приватности ID '+row.id+': '+(e.message||e)+
-        '. Повторного Update не будет.');
-      if(/сессия|войти|авторизац/i.test(e.message||'')){
+    try {
+      // A new userscript instance means WordPress has completed navigation:
+      // inspect the already loaded editor instead of fetching the same page again.
+      const fresh=!!(state.pending?.pageInstance &&
+        state.pending.pageInstance!==PAGE_INSTANCE);
+      const sameEditor=isProductEditor(row);
+      const usePage=fresh && sameEditor;
+      const doc=usePage?document:await fetchAdmin(row.productLink);
+      const source=usePage?'загруженная после Update страница':'один запрос к карточке';
+      if(doc.querySelector('#loginform'))throw new Error('Требуется войти в WordPress.');
+      const info=privateVisibility(doc);
+      if(info.id!==row.id || info.type!=='product')
+        throw new Error('Проверка ID/типа не пройдена: ожидался product '+row.id+
+          ', получены ID='+(info.id||'—')+', тип='+(info.type||'—')+'.');
+      log('info','Private: '+source+'; ID '+row.id+
+        '; visibility-radio-private='+(info.radioPrivate?'checked':'unchecked')+
+        '; display='+(info.display||'—')+
+        '; post_status='+(info.status||'—')+'.',row);
+      if(info.isPrivate)
+        return finalize(row,'done','Visibility: Private подтверждён после Update. ID '+row.id+'.');
+      // Never resend Update. If the saved page does not confirm Private,
+      // classify as unconfirmed instead of misreporting WPML "publish" as failure.
+      return finalize(row,'unconfirmed',
+        'После Update приватность не подтверждена: Visibility='+(info.display||'—')+
+        ', post_status='+(info.status||'—')+'. Повторный Update не выполняется.');
+    }catch(e) {
+      const message=String(e?.message||e);
+      finalize(row,/сессия|войти|авторизац/i.test(message)?'failed':'unconfirmed',
+        'Проверка приватности ID '+row.id+': '+message+
+        '. Повторный Update не выполняется.');
+      if(/сессия|войти|авторизац/i.test(message)){
         state.running=false;state.paused=true;persist();release();
       }
-    }finally{
+    }finally {
       busy=false;
-      if(state.running)schedule(Math.max(700,Number(state.settings.delay)*1000));
+      if(state.running)schedule(Math.max(500,Number(state.settings.delay)*1000));
     }
   }
   function openProduct(row) {
