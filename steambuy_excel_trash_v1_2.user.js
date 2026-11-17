@@ -248,7 +248,7 @@
       log('ok','Обработка файла закончена. Можно скачать отчёт.');
       release();
     } else {
-      schedule(Math.max(600,Number(state.settings.delay) * 1000));
+      schedule(Math.max(500,Number(state.settings.delay) * 1000));
     }
   }
   function failFatal(message,row) {
@@ -568,7 +568,7 @@
         (e.message||e)+'. Не повторяем удаление; результат требует проверки.');
     }finally {
       busy=false;
-      if(state.running)schedule(Math.max(600,Number(state.settings.delay)*1000));
+      if(state.running)schedule(Math.max(500,Number(state.settings.delay)*1000));
     }
   }
   function runStep() {
@@ -633,7 +633,7 @@
     if (!confirm('Сбросить импорт, результаты и журнал для ' + DOMAIN +
       '?\nТовары, уже помещённые в корзину, не восстановятся.')) return;
     release();
-    state=defaults();book=null;fileName='';
+    state=defaults();book=null;fileName='';excelColumn=-1;
     $('#file').value='';
     $('#filename').textContent='Файл не выбран';
     $('#mapping').classList.add('hidden');
@@ -658,6 +658,7 @@
   function fillMapping() {
     if(!book)return;
     const col=linkColumn();
+    excelColumn=col;
     $('#linkColumn').textContent=col<0?'Колонка product_link не найдена в первой строке.':
       'Найдена колонка product_link (№ '+(col+1)+').';
     $('#load').disabled=col<0;
@@ -704,8 +705,8 @@
     const good=rows.filter(r=>r.status==='pending').length;
     if(!good)return toast('Нет корректных ссылок на редактор товаров этого сайта.');
     if(state.rows.length&&!confirm('Заменить прежнюю очередь для '+DOMAIN+'? Вы можете сначала скачать отчёт.'))return;
-    const chosenAction=state.action;
-    state=defaults();state.action=chosenAction;state.filename=fileName;state.sheet=book.SheetNames[Number($('#sheet').value)];state.rows=rows;
+    const chosenAction=state.action, chosenDelay=state.settings.delay;
+    state=defaults();state.action=chosenAction;state.settings.delay=chosenDelay;state.filename=fileName;state.sheet=book.SheetNames[Number($('#sheet').value)];state.rows=rows;
     for(const r of rows){
       if(r.status!=='skipped')continue;
       state.logs.push({time:now(),level:'warn',id:r.id,row:r.excelRow,
@@ -816,8 +817,8 @@
       '<pre id="preview" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#f6f8fc;padding:10px;border-radius:9px"></pre>'+
       '<button class="primary" id="load">Загрузить в очередь</button></div>'+
       '<p class="hint">Сначала выберите действие над товарами в верхней панели. При ошибке отдельного товара скрипт фиксирует причину в журнале и продолжает работу. Очереди сайтов независимы.</p>'+
-      '<div class="setting"><div>Пауза между товарами<small>Секунды, 1–30</small></div>'+
-      '<input id="delay" type="number" min="1" max="30" value="2"></div>'+
+      '<div class="setting"><div>Пауза между товарами<small>Секунды, 0.5–30 (по умолчанию 1)</small></div>'+
+      '<input id="delay" type="number" min="0.5" max="30" step="0.5" value="1"></div>'+
       '<p class="hint">Отсутствующая ссылка или ошибка сохранения не останавливают очередь. Если сессия WordPress истекла, скрипт ставится на паузу до повторного входа.</p></div>'+
       '<div class="view help hidden" id="help">'+
       '<h3>Выбор действия и импорт</h3><ol>'+
@@ -826,7 +827,7 @@
       '<li>Нажмите «Тест: 1 товар» для пробного применения выбранного действия к одному товару.</li>'+
       '<li>После теста нажмите «Начать» для обработки остальных ссылок.</li>'+
       '</ol><h3>Режим: Удалить товар</h3><p>Открывается product_link → Move to Trash → перенаправление WordPress → запись результата → следующая ссылка. Без дополнительных запросов к карточке и страницам корзины.</p>'+
-      '<h3>Режим: Сделать приватным</h3><p>Открывается product_link → Edit visibility → Private → OK → Update → серверное подтверждение статуса private. Если статус уже private, обновление пропускается.</p>'+
+      '<h3>Режим: Сделать приватным</h3><p>Открывается product_link → Edit visibility → Private → OK → Update → проверка выбранного Visibility на заново загруженной странице. Обычно без дополнительных запросов. Если обновления страницы не было — одна проверка через сервер. Повторно Update не нажимается.</p>'+
       '<h3>Ошибки и результаты</h3><p>Предупреждения WPML о переводе не считаются ошибкой Trash. Успех подтверждается перенаправлением или уведомлением WordPress. Если подтверждения нет — «Не подтверждено», а не ложная «Ошибка удаления». Без дополнительных запросов к корзине.</p>'+
       '<p>При истечении авторизации скрипт останавливает обработку до входа. Повторный Trash/Update после перезагрузки не выполняется.</p>'+
       '<p>Выбранное действие закрепляется за очередью после запуска. Для другого действия создайте новую очередь из Excel.</p></div>'+
@@ -915,7 +916,7 @@
     $('#delay').value=state.settings.delay;
     $('#delay').onchange=e=>{
       if(!canEdit()){e.target.value=state.settings.delay;return;}
-      state.settings.delay=Math.min(30,Math.max(1,Number(e.target.value)||2));
+      state.settings.delay=Math.round(Math.min(30,Math.max(0.5,Number(e.target.value)||1))*2)/2;
       e.target.value=state.settings.delay;persist();
     };
     if (GM_getValue(PREFIX+':minimized',false)) {
@@ -972,7 +973,9 @@
   }
   function render() {
     if(!root)return;
-    const count=s=>state.rows.filter(r=>r.status===s).length;
+    const counts=Object.create(null);
+    for(const r of state.rows)counts[r.status]=(counts[r.status]||0)+1;
+    const count=s=>counts[s]||0;
     const done=count('done'),missing=count('not_found'),error=count('failed'),unconfirmed=count('unconfirmed');
     const pending=count('pending')+count('opening')+count('deleting')+count('saving')+count('verifying');
     $('#total').textContent=state.rows.length;
@@ -1006,7 +1009,7 @@
     $('#pause').disabled=!activeHere;
     $('#stop').disabled=!activeHere;
     $('#report').disabled=!state.rows.length;
-    $('#load').disabled=state.running||busy||!book||linkColumn()<0;
+    $('#load').disabled=state.running||busy||!book||excelColumn<0;
     $('#reset').disabled=state.running||busy;
     $('#footer').textContent=state.updated?'Сохранено · '+new Date(state.updated).toLocaleTimeString('ru-RU'):
       'Очередь сохраняется автоматически';
