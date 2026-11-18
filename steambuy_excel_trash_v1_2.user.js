@@ -405,6 +405,94 @@
       if(state.running)schedule(Math.max(500,Number(state.settings.delay)*1000));
     }
   }
+  // Common action: set WooCommerce Regular price from the Excel row.
+  function applyPrice(row) {
+    const input=document.querySelector('#_regular_price');
+    const update=document.querySelector('#publish');
+    if(!input || !update)
+      return finalize(row,'failed','Не найдено поле Regular price или кнопка Update.');
+    if(input.disabled||update.disabled)
+      return finalize(row,'failed','Поле Regular price или Update недоступно (disabled).');
+    const label=clean(update.value||update.textContent);
+    if(!/^(?:update|обновить)$/i.test(label))
+      return finalize(row,'failed','Ожидалась кнопка Update, но найдена «'+(label||'неизвестно')+'».');
+    if(!Number.isSafeInteger(row.cents)||!row.price)
+      return finalize(row,'failed','Для товара ID '+row.id+' отсутствует корректная цена из Excel.');
+    row.before=clean(input.value);
+    try {
+      if(parseRegularPrice(row.before).cents===row.cents){
+        row.after=row.before;
+        return finalize(row,'unchanged','Цена уже равна '+row.price+
+          ' (сайт: '+row.before+'). Сохранение не требуется.');
+      }
+    }catch{/* An empty or unusual old price can still be replaced. */}
+    log('info','ID '+row.id+': Regular price '+(row.before||'(пусто)')+
+      ' → '+row.price+'.',row);
+    try {
+      const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;
+      if(setter)setter.call(input,row.price);
+      else input.value=row.price;
+      input.dispatchEvent(new Event('input',{bubbles:true}));
+      input.dispatchEvent(new Event('change',{bubbles:true}));
+      if(parseRegularPrice(input.value).cents!==row.cents)
+        throw new Error('После ввода поле содержит '+clean(input.value)+', а ожидалось '+row.price+'.');
+    }catch(e){
+      return finalize(row,'failed','Не удалось ввести цену: '+String(e?.message||e));
+    }
+    // Save checkpoint BEFORE Update, do not automatically submit twice.
+    state.phase='verify-price';
+    state.pending={id:row.id,action:'price',pageInstance:PAGE_INSTANCE,at:now()};
+    row.status='saving';row.message='Цена введена, нажимаем Update.';
+    log('info','ID '+row.id+': нажимаем Update для цены '+row.price+'.',row);
+    try{update.click();}
+    catch(e){
+      return finalize(row,'unconfirmed','Update вызвал ошибку: '+String(e?.message||e)+
+        '. Повторно Update не нажимаем.');
+    }
+    setTimeout(()=>{
+      if(state.running&&ownLease()&&current()?.id===row.id&&
+        state.phase==='verify-price'&&!busy&&!moving)verifyPrice(row);
+    },4000);
+  }
+  async function verifyPrice(row) {
+    if(busy)return;
+    busy=true;row.status='verifying';row.message='Проверяем сохранённую цену после Update.';
+    persist();
+    try{
+      const usePage=!!(state.pending?.pageInstance &&
+        state.pending.pageInstance!==PAGE_INSTANCE && isProductEditor(row));
+      const doc=usePage?document:await fetchAdmin(row.productLink);
+      if(doc.querySelector('#loginform'))throw new Error('Требуется войти в WordPress.');
+      const id=clean(doc.querySelector('#post_ID,input[name="post_ID"]')?.value);
+      const type=clean(doc.querySelector('#post_type,input[name="post_type"]')?.value)||
+        (doc.body?.classList.contains('post-type-product')?'product':'');
+      if(id!==row.id||type!=='product')
+        throw new Error('После Update открыта другая карточка (ID '+id+', тип '+type+').');
+      const input=doc.querySelector('#_regular_price');
+      if(!input)throw new Error('Не найдено сохранённое поле #_regular_price.');
+      row.after=clean(input.value);
+      let saved;
+      try{saved=parseRegularPrice(row.after);}catch{saved=null;}
+      log('info','ID '+row.id+': после Update цена = '+(row.after||'(пусто)')+
+        '; ожидается '+row.price+'; источник: '+(usePage?'загруженный редактор':'один контрольный запрос')+'.',row);
+      if(saved&&saved.cents===row.cents)
+        return finalize(row,'done','Цена изменена: '+(row.before||'(пусто)')+
+          ' → '+row.after+'.');
+      return finalize(row,'unconfirmed','Цена после Update не совпала. Ожидалась '+
+        row.price+', отображается '+(row.after||'(пусто)')+
+        '. Повторный Update не выполняется.');
+    }catch(e){
+      const msg=String(e?.message||e);
+      finalize(row,'unconfirmed','Не удалось подтвердить цену после Update: '+msg+
+        '. Повторного Update не будет.');
+      if(/сессия|войти|авторизац/i.test(msg)){
+        state.running=false;state.paused=true;persist();release();
+      }
+    }finally{
+      busy=false;
+      if(state.running)schedule(Math.max(500,Number(state.settings.delay)*1000));
+    }
+  }
   function openProduct(row) {
     // Action is fixed for the row once processing starts, regardless of UI changes.
     if(!['trash','private','price'].includes(row.action)) row.action=state.action;
