@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Product Manager — Trash / Private / Prices
 // @namespace    https://steambuy.pro/
-// @version      2.6.0
+// @version      2.6.1
 // @description  WooCommerce Excel: Trash / Private / Price, быстрый режим 1-10 параллельных запросов без загрузки картинок, журнал.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -31,7 +31,7 @@
 (() => {
   'use strict';
   // Keep v3 queues, but require explicit action selection after upgrading to v2.2.
-  const VERSION = '2.6.0';
+  const VERSION = '2.6.1';
   const DOMAIN = location.hostname;
   const PREFIX = 'sb-product-trash-v3:' + DOMAIN;
   const OLD_LEASE = 'sb-product-trash-v2:' + DOMAIN + ':lease';
@@ -422,42 +422,53 @@
   // Common action: set WooCommerce Regular price from the Excel row.
   function applyPrice(row) {
     const input=document.querySelector('#_regular_price');
+    const sale=document.querySelector('#_sale_price');
     const update=document.querySelector('#publish');
-    if(!input || !update)
-      return finalize(row,'failed','Не найдено поле Regular price или кнопка Update.');
-    if(input.disabled||update.disabled)
-      return finalize(row,'failed','Поле Regular price или Update недоступно (disabled).');
+    if(!input || !sale || !update)
+      return finalize(row,'failed','Не найдено поле Regular price, Sale price или кнопка Update.');
+    if(input.name!=='_regular_price'||sale.name!=='_sale_price')
+      return finalize(row,'failed','Поля цен не совпадают с ожидаемыми WooCommerce _regular_price / _sale_price.');
+    if(input.disabled||sale.disabled||update.disabled)
+      return finalize(row,'failed','Поле Regular price, Sale price или Update недоступно (disabled).');
     const label=clean(update.value||update.textContent);
     if(!/^(?:update|обновить)$/i.test(label))
       return finalize(row,'failed','Ожидалась кнопка Update, но найдена «'+(label||'неизвестно')+'».');
     if(!Number.isSafeInteger(row.cents)||!row.price)
       return finalize(row,'failed','Для товара ID '+row.id+' отсутствует корректная цена из Excel.');
     row.before=clean(input.value);
-    try {
-      if(parseRegularPrice(row.before).cents===row.cents){
-        row.after=row.before;
-        return finalize(row,'unchanged','Цена уже равна '+row.price+
-          ' (сайт: '+row.before+'). Сохранение не требуется.');
-      }
-    }catch{/* An empty or unusual old price can still be replaced. */}
+    row.saleBefore=clean(sale.value);
+    let regularMatches=false;
+    try{regularMatches=parseRegularPrice(row.before).cents===row.cents;}
+    catch{/* An empty or unusual old price can still be replaced. */}
+    if(regularMatches && !row.saleBefore){
+      row.after=row.before;row.saleAfter='';
+      return finalize(row,'unchanged','Regular price уже '+row.price+
+        ', Sale price пустая. Update не требуется.');
+    }
     log('info','ID '+row.id+': Regular price '+(row.before||'(пусто)')+
-      ' → '+row.price+'.',row);
+      ' → '+row.price+'; Sale price '+(row.saleBefore||'(пусто)')+' → (пусто).',row);
     try {
       const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;
       if(setter)setter.call(input,row.price);
       else input.value=row.price;
       input.dispatchEvent(new Event('input',{bubbles:true}));
       input.dispatchEvent(new Event('change',{bubbles:true}));
+      if(setter)setter.call(sale,'');
+      else sale.value='';
+      sale.dispatchEvent(new Event('input',{bubbles:true}));
+      sale.dispatchEvent(new Event('change',{bubbles:true}));
       if(parseRegularPrice(input.value).cents!==row.cents)
-        throw new Error('После ввода поле содержит '+clean(input.value)+', а ожидалось '+row.price+'.');
+        throw new Error('Regular price после ввода содержит '+clean(input.value)+', ожидалось '+row.price+'.');
+      if(clean(sale.value)!=='')
+        throw new Error('Sale price не очистилась перед Update: '+clean(sale.value)+'.');
     }catch(e){
       return finalize(row,'failed','Не удалось ввести цену: '+String(e?.message||e));
     }
     // Save checkpoint BEFORE Update, do not automatically submit twice.
     state.phase='verify-price';
     state.pending={id:row.id,action:'price',pageInstance:PAGE_INSTANCE,at:now()};
-    row.status='saving';row.message='Цена введена, нажимаем Update.';
-    log('info','ID '+row.id+': нажимаем Update для цены '+row.price+'.',row);
+    row.status='saving';row.message='Regular price установлена, Sale price очищена; нажимаем Update.';
+    log('info','ID '+row.id+': нажимаем Update. Regular '+row.price+'; Sale price пустая.',row);
     try{update.click();}
     catch(e){
       return finalize(row,'unconfirmed','Update вызвал ошибку: '+String(e?.message||e)+
@@ -483,17 +494,22 @@
       if(id!==row.id||type!=='product')
         throw new Error('После Update открыта другая карточка (ID '+id+', тип '+type+').');
       const input=doc.querySelector('#_regular_price');
-      if(!input)throw new Error('Не найдено сохранённое поле #_regular_price.');
+      const sale=doc.querySelector('#_sale_price');
+      if(!input||!sale)throw new Error('Не найдены сохранённые поля Regular price / Sale price.');
       row.after=clean(input.value);
+      row.saleAfter=clean(sale.value);
       let saved;
       try{saved=parseRegularPrice(row.after);}catch{saved=null;}
-      log('info','ID '+row.id+': после Update цена = '+(row.after||'(пусто)')+
-        '; ожидается '+row.price+'; источник: '+(usePage?'загруженный редактор':'один контрольный запрос')+'.',row);
-      if(saved&&saved.cents===row.cents)
-        return finalize(row,'done','Цена изменена: '+(row.before||'(пусто)')+
-          ' → '+row.after+'.');
-      return finalize(row,'unconfirmed','Цена после Update не совпала. Ожидалась '+
-        row.price+', отображается '+(row.after||'(пусто)')+
+      log('info','ID '+row.id+': после Update Regular price='+(row.after||'(пусто)')+
+        ' (ожидалась '+row.price+'); Sale price='+(row.saleAfter||'(пусто)')+
+        ' (ожидалась пустая); источник: '+(usePage?'загруженный редактор':'один контрольный запрос')+'.',row);
+      if(saved&&saved.cents===row.cents&&row.saleAfter==='')
+        return finalize(row,'done','Regular price: '+(row.before||'(пусто)')+
+          ' → '+row.after+'; Sale price очищена'+
+          (row.saleBefore?' (была '+row.saleBefore+')':'')+'.');
+      return finalize(row,'unconfirmed','После Update цены не соответствуют заданию: Regular price ожидалась '+
+        row.price+', получено '+(row.after||'(пусто)')+
+        '; Sale price должна быть пустой, получено '+(row.saleAfter||'(пусто)')+
         '. Повторный Update не выполняется.');
     }catch(e){
       const msg=String(e?.message||e);
@@ -924,16 +940,17 @@
     if(!state.rows.length)return toast('Очередь пуста.');
     if(typeof XLSX==='undefined')return toast('Библиотека XLSX недоступна.');
     const cols=['Строка Excel','product_link','ID из ссылки','Название на сайте','Действие',
-      'Цена из Excel','Нормализованная цена','Цена до','Цена после',
-      'Режим','Поток','Время (с)','Статус','Комментарий','Завершено'];
+      'Цена из Excel','Нормализованная цена','Regular до','Regular после',
+      'Sale до','Sale после','Режим','Поток','Время (с)','Статус','Комментарий','Завершено'];
     const line=r=>[r.excelRow,r.productLink,r.id,r.foundName,actionName(r.action||state.action),
       r.rawPrice||'',r.price||'',r.before||'',r.after||'',
+      r.saleBefore||'',r.saleAfter??'',
       r.fastWorker?'Быстрый':'Совместимый',r.fastWorker||'',
       r.elapsedMs!=null?Number((r.elapsedMs/1000).toFixed(2)):'',rowLabel(r),r.message,r.finished];
     const wb=XLSX.utils.book_new();
     const add=(name,rows)=>{
       const ws=XLSX.utils.aoa_to_sheet([cols,...rows.map(line)]);
-      ws['!cols']=[{wch:13},{wch:95},{wch:18},{wch:40},{wch:25},{wch:20},{wch:20},{wch:16},{wch:16},{wch:15},{wch:10},{wch:13},{wch:22},{wch:95},{wch:25}];
+      ws['!cols']=[{wch:13},{wch:95},{wch:18},{wch:40},{wch:25},{wch:20},{wch:20},{wch:16},{wch:16},{wch:16},{wch:16},{wch:15},{wch:10},{wch:13},{wch:22},{wch:95},{wch:25}];
       XLSX.utils.book_append_sheet(wb,ws,name);
     };
     add('Все товары',state.rows);
@@ -1133,13 +1150,18 @@
       (doc.body?.classList.contains('post-type-product')?'product':'');
     if(id!==row.id||type!=='product')return {confirmed:false,reason:'нет редактора с ожидаемым ID'};
     if(kind==='price'){
-      const raw=clean(doc.querySelector('#_regular_price')?.value);
-      row.after=raw;
-      try{
-        if(parseRegularPrice(raw).cents===row.cents)
-          return {confirmed:true,detail:'Regular price: '+raw};
-      }catch{/* field is empty or malformed */}
-      return {confirmed:false,reason:'ожидалось '+row.price+', получено '+(raw||'пусто')};
+      const regular=doc.querySelector('#_regular_price'),sale=doc.querySelector('#_sale_price');
+      row.after=clean(regular?.value);
+      row.saleAfter=clean(sale?.value);
+      if(!regular||!sale)
+        return {confirmed:false,reason:'не найдены сохранённые поля Regular price / Sale price'};
+      let regularMatches=false;
+      try{regularMatches=parseRegularPrice(row.after).cents===row.cents;}
+      catch{/* field is empty or malformed */}
+      if(regularMatches&&row.saleAfter==='')
+        return {confirmed:true,detail:'Regular price: '+row.after+'; Sale price пустая'};
+      return {confirmed:false,reason:'Regular price ожидалась '+row.price+', получено '+(row.after||'пусто')+
+        '; Sale price должна быть пустой, получено '+(row.saleAfter||'пусто')};
     }
     const info=privateVisibility(doc);
     return info.id===row.id&&info.type==='product'&&info.isPrivate?
@@ -1203,19 +1225,28 @@
       const payload=fastPayload(row,editor);
       if(row.action==='price'){
         const field=editor.form.querySelector('#_regular_price');
+        const sale=editor.form.querySelector('#_sale_price');
         if(!field||field.disabled||field.name!=='_regular_price')
           throw new Error('Отсутствует редактируемое поле _regular_price.');
+        if(!sale||sale.disabled||sale.name!=='_sale_price')
+          throw new Error('Отсутствует редактируемое поле _sale_price; изменение цены остановлено.');
         if(!Number.isSafeInteger(row.cents)||!row.price)
           throw new Error('В Excel нет корректной цены.');
         row.before=clean(field.value);
-        try{
-          if(parseRegularPrice(row.before).cents===row.cents){
-            row.after=row.before;
-            return fastFinish(row,'unchanged','Цена '+row.before+' уже совпадает; Update не требуется.',performance.now()-started);
-          }
-        }catch{/* allow replacing a blank existing price */}
+        row.saleBefore=clean(sale.value);
+        let regularMatches=false;
+        try{regularMatches=parseRegularPrice(row.before).cents===row.cents;}
+        catch{/* allow replacing a blank existing price */}
+        if(regularMatches&&!row.saleBefore){
+          row.after=row.before;row.saleAfter='';
+          return fastFinish(row,'unchanged','Regular price уже '+row.before+
+            ', Sale price пустая. Update не требуется.',performance.now()-started);
+        }
         payload.set('_regular_price',row.price);
-        fastLog('info','Поток '+worker+' · ID '+row.id+': цена '+(row.before||'(пусто)')+' → '+row.price+'.',row);
+        payload.set('_sale_price','');
+        fastLog('info','Поток '+worker+' · ID '+row.id+': Regular price '+
+          (row.before||'(пусто)')+' → '+row.price+
+          '; Sale price '+(row.saleBefore||'(пусто)')+' → (пусто).',row);
       }else if(row.action==='private'){
         const info=privateVisibility(doc);
         if(info.isPrivate)
@@ -1236,7 +1267,9 @@
       const confirmation=await fastVerifySaved(row,res,row.action);
       if(confirmation.confirmed)
         fastFinish(row,'done',row.action==='price'?
-          'Цена сохранена: '+(row.before||'(пусто)')+' → '+(row.after||row.price)+'.':
+          'Regular price сохранена: '+(row.before||'(пусто)')+' → '+
+            (row.after||row.price)+'; Sale price очищена'+
+            (row.saleBefore?' (была '+row.saleBefore+')':'')+'.':
           'Visibility Private подтверждена после Update.',
           performance.now()-started);
       else fastFinish(row,'unconfirmed','Update выполнен, но сохранение не подтверждено: '+
@@ -1458,7 +1491,7 @@
       '<li>После теста нажмите «Начать» для обработки остальных ссылок.</li>'+
       '</ol><h3>Режим: Удалить товар</h3><p>Открывается product_link → Move to Trash → перенаправление WordPress → запись результата → следующая ссылка. Без дополнительных запросов к карточке и страницам корзины.</p>'+
       '<h3>Режим: Сделать приватным</h3><p>Открывается product_link → Edit visibility → Private → OK → Update → проверка выбранного Visibility на заново загруженной странице. Обычно без дополнительных запросов. Если обновления страницы не было — одна проверка через сервер. Повторно Update не нажимается.</p>'+
-      '<h3>Редактирование цены</h3><p>Открывается product_link → проверяется ID → Regular price → Update → сверка сохранённой цены. Если цена уже совпадает, сохранение пропускается. Повторный Update автоматически не выполняется.</p>'+
+      '<h3>Редактирование цены</h3><p>Открывается product_link → проверяется ID → Regular price из Excel, Sale price очищается → Update → проверяются оба сохранённых поля. Даже если Regular price уже совпадает, непустая Sale price будет очищена через Update. Если обе цены соответствуют заданию, Update пропускается. Повторный Update автоматически не выполняется.</p>'+
       '<h3>Быстрый режим 1–10 запросов</h3><p>В «Импорте» выберите быстрый режим и количество параллельных запросов. Товары запрашиваются как HTML, изображения удаляются до разбора, интерфейс WordPress не загружается. Update/Trash выполняются один раз с проверкой ID и nonce; при отсутствии подтверждения — «Не подтверждено», автоматических повторов нет. В быстром режиме кнопка «Пауза» прекращает выдачу новых товаров, уже отправленные запросы завершаются.</p>'+
       '<h3>Очередь и журнал</h3><p>Все результаты, включая «Не найдены», «Ошибки обработки» и «Не подтверждено», выбираются выпадающим фильтром во вкладке «Очередь». Во вкладке «Журнал» можно искать по ID и фильтровать сообщения по типу. Весь журнал доступен в TXT, результаты — в Excel.</p>'+
       '<p>При истечении авторизации скрипт останавливает обработку до входа. Повторный Trash/Update после перезагрузки не выполняется.</p>'+
@@ -1621,7 +1654,9 @@
         '<td><span class="title" title="'+esc(r.foundName||r.productLink||'—')+'">'+esc(r.foundName||('Товар ID '+(r.id||'—')))+
         '</span><small>'+esc(r.productLink||'')+'</small>'+
         (r.action==='price'?'<small>Цена: '+esc(r.price||r.rawPrice||'—')+
-          ' · До: '+esc(r.before||'—')+' · После: '+esc(r.after||'—')+'</small>':'')+
+          ' · До: '+esc(r.before||'—')+' · После: '+esc(r.after||'—')+
+          '</small><small>Sale price: '+esc(r.saleBefore||'пусто')+
+          ' → '+esc(r.saleAfter??'—')+'</small>':'')+
         '<small>'+esc(r.message||'')+'</small></td>'+
         '<td><span class="badge '+(statuses[r.status]||'neutral')+'">'+esc(rowLabel(r))+
         '</span></td></tr>'
