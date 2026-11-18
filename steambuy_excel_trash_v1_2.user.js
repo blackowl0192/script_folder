@@ -1051,6 +1051,16 @@
       u.username||u.password)throw new Error('Переход за пределы текущего wp-admin заблокирован.');
     return u;
   }
+  function fastSanitizeMedia(html){
+    const rawBlocks=/(<textarea\b[^>]*>[\s\S]*?<\/textarea\s*>|<script\b[^>]*>[\s\S]*?<\/script\s*>|<style\b[^>]*>[\s\S]*?<\/style\s*>|<template\b[^>]*>[\s\S]*?<\/template\s*>)/gi;
+    return String(html).split(rawBlocks).map(part=>{
+      if(/^<(?:textarea|script|style|template)\b/i.test(part))return part;
+      return part.replace(/<img\b[^>]*>/gi,'')
+        .replace(/<source\b[^>]*>/gi,'')
+        .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe\s*>/gi,'')
+        .replace(/<video\b[^>]*>[\s\S]*?<\/video\s*>/gi,'');
+    }).join('');
+  }
   async function fastRequest(url,options={}) {
     const u=fastUrlAllowed(url);
     const controller=new AbortController();
@@ -1071,13 +1081,9 @@
       if(mime&&!/(html|text\/plain|application\/xhtml)/i.test(mime))
         throw new Error('Неожиданный тип ответа: '+mime);
       const html=await response.text();
-      // DOMParser may otherwise start downloads from <img> in some browsers.
-      // Strip media tags BEFORE parsing. CSS/JS/fonts never execute in the inert document.
-      const lightweight=html.replace(/<img\b[^>]*>/gi,'')
-        .replace(/<source\b[^>]*>/gi,'')
-        .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe\s*>/gi,'')
-        .replace(/<video\b[^>]*>[\s\S]*?<\/video\s*>/gi,'');
-      const doc=new DOMParser().parseFromString(lightweight,'text/html');
+      // Strip resource elements BEFORE parsing, but DO NOT alter markup in
+      // <textarea> (product description), scripts, styles or <template>.
+      const doc=new DOMParser().parseFromString(fastSanitizeMedia(html),'text/html');
       if(doc.querySelector('#loginform'))
         throw new Error('Требуется войти в WordPress.');
       const die=doc.querySelector('.wp-die-message');
@@ -1268,7 +1274,7 @@
       // Reserve synchronously to prevent two workers receiving the same ID.
       row.status='opening';row.fastStage='loading';row.fastWorker=worker;
       fastActive.set(row.id,true);
-      fastSave(true);
+      fastSave(); // GET reservation is safe to restart after a reload; save batches.
       Promise.resolve().then(()=>fastProcess(row,worker))
         .catch(e=>{if(!TERMINAL.has(row.status))
           fastFinish(row,'unconfirmed','Неожиданная ошибка потока: '+String(e?.message||e));})
