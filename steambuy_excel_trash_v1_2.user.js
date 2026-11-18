@@ -700,6 +700,9 @@
     const pendingAction=state.pending?.action || (state.pending && ['verify','verifying','deleting'].includes(state.phase)?'trash':'');
     const selected=clean(state.action);
     if(!['trash','private','price'].includes(selected)&&!pendingAction){log('error','Запуск невозможен: действие не выбрано.');return toast('Выберите действие с товарами.');}
+    if(selected==='price' && state.rows.some(r=>r.status==='pending' &&
+      (!r.price || !Number.isSafeInteger(r.cents))))
+      return toast('В очереди нет подготовленных цен. Выберите «Редактировать цену» и импортируйте Excel заново.');
     if(!claim())return;
     const ongoing=state.index>=0&&!!current()&&!TERMINAL.has(current().status);
     if(!ongoing){state.index=nextPending();state.phase='open';}
@@ -753,16 +756,34 @@
     return /^https?:\/\//i.test(shown)||shown.startsWith('/wp-admin/')?shown:(target||shown);
   }
   function fillMapping() {
-    if(!book)return;
-    const col=linkColumn();
+    $('#priceColumnWrap').classList.toggle('hidden',state.action!=='price');
+    if(!book){
+      excelColumn=-1;priceColumn=-1;
+      $('#load').disabled=true;
+      return;
+    }
+    const rows=sheetRows(),head=rows[0]||[];
+    const col=head.findIndex(x=>normalized(x).replace(/[\s\-]+/g,'_')==='product_link');
     excelColumn=col;
-    $('#linkColumn').textContent=col<0?'Колонка product_link не найдена в первой строке.':
+    $('#linkColumn').textContent=col<0?'Колонка product_link не найдена.':
       'Найдена колонка product_link (№ '+(col+1)+').';
-    $('#load').disabled=col<0;
-    const rows=sheetRows();
-    $('#preview').textContent=col<0?'В первой строке должен быть заголовок product_link.':
-      rows.slice(1).map((r,i)=>clean(linkCell(rows,i+1,col))).filter(Boolean).slice(0,5).join('\n')||
-      'Нет ссылок.';
+    const select=$('#priceColumn'),previous=select.value;
+    select.innerHTML='<option value="">Выберите столбец цены...</option>'+
+      head.map((h,i)=>'<option value="'+i+'">'+esc(h||'Колонка '+(i+1))+'</option>').join('');
+    const normalizedHeaders=head.map(x=>normalized(x).replace(/[\s\-]+/g,'_'));
+    const names=['price','_regular_price','regular_price','цена','цена_игры','стоимость','цена_товара','price_€','regular_price_(€)'];
+    const suggested=normalizedHeaders.findIndex(h=>names.includes(h));
+    let selected=previous!=='' && head[Number(previous)]!==undefined ? Number(previous) :
+      suggested>=0?suggested:(head.length===2&&col>=0?1-col:-1);
+    if(selected===col)selected=-1;
+    select.value=selected>=0?String(selected):'';
+    priceColumn=selected;
+    const isPrice=state.action==='price';
+    $('#load').disabled=col<0||(isPrice&&selected<0);
+    $('#preview').textContent=col<0?'В Excel требуется заголовок product_link.':
+      rows.slice(1,6).map((r,i)=>'Строка '+(i+2)+': '+
+        (isPrice?'цена '+clean(r[selected])+' · ':'')+clean(linkCell(rows,i+1,col)))
+        .filter(Boolean).join('\n')||'Нет ссылок.';
   }
   function preview(){fillMapping();}
 
@@ -784,15 +805,26 @@
     if(!book||!canEdit())return;
     const data=sheetRows(),col=linkColumn();
     if(col<0)return toast('В первой строке Excel нужен столбец product_link.');
+    const isPrice=state.action==='price',chosenPrice=$('#priceColumn').value;
+    const pc=isPrice && chosenPrice!==''?Number(chosenPrice):-1;
+    if(isPrice&&(pc<0||pc===col||!Number.isInteger(pc)))
+      return toast('Для редактирования цены укажите отдельный столбец цены.');
+    if(!['trash','private','price'].includes(state.action))
+      return toast('Сначала выберите действие с товарами.');
     const seen=new Set(),rows=[];
     for(let i=1;i<data.length;i++){
       const raw=clean(linkCell(data,i,col));
       if(!raw)continue;
       const row={excelRow:i+1,productLink:raw,id:'',name:'',status:'pending',
-        message:'',foundName:'',wpPostId:'',finished:''};
+        message:'',foundName:'',wpPostId:'',finished:'',action:state.action,
+        rawPrice:isPrice?clean(data[i]?.[pc]):'',price:'',cents:null,before:'',after:''};
       try{
         const p=parseProductLink(raw);
         row.productLink=p.url;row.id=p.id;
+        if(isPrice){
+          const result=parseRegularPrice(row.rawPrice);
+          row.price=result.value;row.cents=result.cents;
+        }
         if(seen.has(row.id))throw new Error('Дубликат product_link с ID '+row.id+'.');
         seen.add(row.id);
       }catch(e){row.status='skipped';row.message=e.message;}
@@ -816,16 +848,21 @@
   function report(){
     if(!state.rows.length)return toast('Очередь пуста.');
     if(typeof XLSX==='undefined')return toast('Библиотека XLSX недоступна.');
-    const cols=['Строка Excel','product_link','ID из ссылки','Название на сайте','Действие','Статус','Комментарий','Завершено'];
-    const line=r=>[r.excelRow,r.productLink,r.id,r.foundName,actionName(r.action||state.action),rowLabel(r),r.message,r.finished];
+    const cols=['Строка Excel','product_link','ID из ссылки','Название на сайте','Действие',
+      'Цена из Excel','Нормализованная цена','Цена до','Цена после',
+      'Статус','Комментарий','Завершено'];
+    const line=r=>[r.excelRow,r.productLink,r.id,r.foundName,actionName(r.action||state.action),
+      r.rawPrice||'',r.price||'',r.before||'',r.after||'',rowLabel(r),r.message,r.finished];
     const wb=XLSX.utils.book_new();
     const add=(name,rows)=>{
       const ws=XLSX.utils.aoa_to_sheet([cols,...rows.map(line)]);
-      ws['!cols']=[{wch:13},{wch:100},{wch:18},{wch:50},{wch:30},{wch:24},{wch:105},{wch:25}];
+      ws['!cols']=[{wch:13},{wch:95},{wch:18},{wch:40},{wch:25},{wch:20},{wch:20},{wch:16},{wch:16},{wch:22},{wch:95},{wch:25}];
       XLSX.utils.book_append_sheet(wb,ws,name);
     };
     add('Все товары',state.rows);
-    add('Удалено',state.rows.filter(r=>r.status==='done'&&r.action!=='private'));
+    add('Удалено',state.rows.filter(r=>r.status==='done'&&r.action==='trash'));
+    add('Цены изменены',state.rows.filter(r=>r.status==='done'&&r.action==='price'));
+    add('Без изменений',state.rows.filter(r=>r.status==='unchanged'));
     add('Приватные',state.rows.filter(r=>r.status==='done'&&r.action==='private'));
     add('Не найдено',state.rows.filter(r=>r.status==='not_found'));
     add('Не подтверждено',state.rows.filter(r=>r.status==='unconfirmed'));
@@ -844,7 +881,7 @@
       'ID '+(x.id||'—'),x.message].join(' | ')).join('\n');
     const blob=new Blob([text],{type:'text/plain;charset=utf-8'});
     const url=URL.createObjectURL(blob),a=document.createElement('a');
-    a.href=url;a.download='trash_log_'+DOMAIN+'.txt';a.click();
+    a.href=url;a.download='product_manager_log_'+DOMAIN+'.txt';a.click();
     setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
 
