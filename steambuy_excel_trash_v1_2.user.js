@@ -2,7 +2,7 @@
 // @name         Product Manager — Trash / Private / Prices
 // @namespace    https://steambuy.pro/
 // @version      2.6.0
-// @description  Единая Excel-очередь: Trash, Private или Regular price (€). 4 вкладки, фильтры и журнал; 7 сайтов.
+// @description  WooCommerce Excel: Trash / Private / Price, быстрый режим 1-10 параллельных запросов без загрузки картинок, журнал.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
 // @downloadURL  https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -679,6 +679,7 @@
     }
   }
   function runStep() {
+    if(state.settings.mode==='fast')return fastPump();
     if(!state.running||busy||moving)return;
     if(!ownLease()){
       state.running=false;state.paused=true;persist();toast('Очередь остановлена: управление у другой вкладки.');
@@ -1053,9 +1054,10 @@
     try{
       response=await fetch(u.href,{credentials:'same-origin',redirect:'follow',
         cache:'no-store',signal:controller.signal,...options});
-      const final=fastUrlAllowed(response.url||u.href);
-      if(final.pathname.endsWith('/wp-login.php'))
-        throw new Error('Требуется авторизация WordPress (redirect wp-login.php).');
+      const redirected=new URL(response.url||u.href,location.href);
+      if(redirected.origin!==location.origin||redirected.pathname.endsWith('/wp-login.php'))
+        throw new Error('Требуется авторизация WordPress (redirect за пределы wp-admin).');
+      const final=fastUrlAllowed(redirected.href);
       if(!response.ok){
         const ex=new Error('HTTP '+response.status+' при запросе '+u.pathname);
         ex.httpStatus=response.status;throw ex;
@@ -1423,7 +1425,13 @@
       '<pre id="preview" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#f6f8fc;padding:10px;border-radius:9px"></pre>'+
       '<button class="primary" id="load">Загрузить в очередь</button></div>'+
       '<p class="hint">Сначала выберите действие над товарами в верхней панели. При ошибке отдельного товара скрипт фиксирует причину в журнале и продолжает работу. Очереди сайтов независимы.</p>'+
-      '<div class="setting"><div>Пауза между товарами<small>Секунды, 0.5–30 (по умолчанию 1)</small></div>'+
+      '<div class="setting"><div>Режим обработки<small>Быстрый режим получает HTML без отображения карточек и изображений. Сначала протестируйте 1 товар.</small></div>'+
+      '<select id="processingMode"><option value="compatible">Совместимый — открывать карточки</option>'+
+      '<option value="fast">Быстрый — параллельные запросы</option></select></div>'+
+      '<div class="setting" id="fastWorkersWrap"><div>Параллельные запросы<small>1–10, рекомендуем тест с 1, затем 3–5</small></div>'+
+      '<input id="fastWorkers" type="number" min="1" max="10" step="1" value="5"></div>'+
+      '<div class="hint" id="fastHint">Быстрый режим не загружает изображения редактора; операции выполняются без перезагрузки вкладки. WPML и WooCommerce требуют теста перед массовым запуском.</div>'+
+      '<div class="setting"><div>Пауза между товарами<small>Только совместимый режим; секунды, 0.5–30</small></div>'+
       '<input id="delay" type="number" min="0.5" max="30" step="0.5" value="1"></div>'+
       '<p class="hint">Отсутствующая ссылка или ошибка сохранения не останавливают очередь. Если сессия WordPress истекла, скрипт ставится на паузу до повторного входа.</p></div>'+
       '<div class="view help hidden" id="help">'+
@@ -1435,6 +1443,7 @@
       '</ol><h3>Режим: Удалить товар</h3><p>Открывается product_link → Move to Trash → перенаправление WordPress → запись результата → следующая ссылка. Без дополнительных запросов к карточке и страницам корзины.</p>'+
       '<h3>Режим: Сделать приватным</h3><p>Открывается product_link → Edit visibility → Private → OK → Update → проверка выбранного Visibility на заново загруженной странице. Обычно без дополнительных запросов. Если обновления страницы не было — одна проверка через сервер. Повторно Update не нажимается.</p>'+
       '<h3>Редактирование цены</h3><p>Открывается product_link → проверяется ID → Regular price → Update → сверка сохранённой цены. Если цена уже совпадает, сохранение пропускается. Повторный Update автоматически не выполняется.</p>'+
+      '<h3>Быстрый режим 1–10 запросов</h3><p>В «Импорте» выберите быстрый режим и количество параллельных запросов. Товары запрашиваются как HTML, изображения удаляются до разбора, интерфейс WordPress не загружается. Update/Trash выполняются один раз с проверкой ID и nonce; при отсутствии подтверждения — «Не подтверждено», автоматических повторов нет. В быстром режиме кнопка «Пауза» прекращает выдачу новых товаров, уже отправленные запросы завершаются.</p>'+
       '<h3>Очередь и журнал</h3><p>Все результаты, включая «Не найдены», «Ошибки обработки» и «Не подтверждено», выбираются выпадающим фильтром во вкладке «Очередь». Во вкладке «Журнал» можно искать по ID и фильтровать сообщения по типу. Весь журнал доступен в TXT, результаты — в Excel.</p>'+
       '<p>При истечении авторизации скрипт останавливает обработку до входа. Повторный Trash/Update после перезагрузки не выполняется.</p>'+
       '<p>Выбранное действие закрепляется за очередью после запуска. Для другого действия создайте новую очередь из Excel.</p></div>'+
@@ -1533,6 +1542,21 @@
     $('#logSearch').value=logSearch;
     $('#logLevel').value=logLevel;
     $('#logLimit').value=String(logLimit);
+    $('#processingMode').value=state.settings.mode;
+    $('#fastWorkers').value=state.settings.workers;
+    $('#processingMode').onchange=e=>{
+      if(!canEdit()){e.target.value=state.settings.mode;return;}
+      if(state.started){e.target.value=state.settings.mode;return toast('Для смены режима после старта загрузите новую очередь.');}
+      state.settings.mode=e.target.value==='fast'?'fast':'compatible';
+      log('info','Режим обработки: '+(state.settings.mode==='fast'?'быстрый параллельный':'совместимый')+'.');
+      render();
+    };
+    $('#fastWorkers').onchange=e=>{
+      if(!canEdit()){e.target.value=state.settings.workers;return;}
+      state.settings.workers=Math.max(1,Math.min(10,Math.round(Number(e.target.value)||5)));
+      e.target.value=state.settings.workers;
+      log('info','Количество параллельных запросов: '+state.settings.workers+'.');
+    };
     $('#delay').value=state.settings.delay;
     $('#delay').onchange=e=>{
       if(!canEdit()){e.target.value=state.settings.delay;return;}
@@ -1616,35 +1640,42 @@
     $('#bar').style.width=(state.rows.length?
       Math.round(100*(done+missing+error+unconfirmed+count('skipped'))/state.rows.length):0)+'%';
     const row=current();
-    $('#current').textContent=state.running?
+    $('#current').textContent=state.running&&state.settings.mode==='fast'?
+      'Быстрый режим · активные запросы '+fastActive.size+'/'+
+      (state.mode==='one'?1:fastLimit)+' · выполнено '+done+' из '+state.rows.length:
+      state.running?
       'Обработка ссылки ID '+(row?.id||'—')+' · '+(labels[row?.status]||'Открытие'):
       state.paused?'Пауза · нажмите «Начать» для продолжения':
       state.rows.length?(state.filename+' · ожидают: '+pending):
       'Загрузите Excel с product_link';
     $('#dot').classList.toggle('run',state.running);
-    const hasPending=nextPending()>=0||!!(row&&!TERMINAL.has(row.status));
+    const hasPending=nextPending()>=0||!!(row&&!TERMINAL.has(row.status))||fastActive.size>0;
     const lease=GM_getValue(LEASE,null);
     const lockedElsewhere=!!(lease && lease.until>Date.now() && lease.id!==tabId);
     const activeHere=state.running && state.owner===tabId;
     const recoverable=state.running && state.owner!==tabId && !lockedElsewhere;
     $('#start').textContent=recoverable?'▶ Возобновить':state.paused?'▶ Продолжить':'▶ Начать';
-    $('#start').disabled=activeHere||lockedElsewhere||busy||!hasPending;
-    $('#one').disabled=activeHere||lockedElsewhere||busy||!hasPending;
+    $('#start').disabled=activeHere||lockedElsewhere||busy||fastActive.size>0||!hasPending;
+    $('#one').disabled=activeHere||lockedElsewhere||busy||fastActive.size>0||!hasPending;
     $('#operation').value=state.action||'';
-    $('#operation').disabled=activeHere||lockedElsewhere||busy||!!state.started;
+    $('#operation').disabled=activeHere||lockedElsewhere||busy||fastActive.size>0||!!state.started;
     if(!['trash','private','price'].includes(state.action)){
       $('#start').disabled=true;$('#one').disabled=true;
     }
     $('#pause').disabled=!activeHere;
     $('#stop').disabled=!activeHere;
     $('#report').disabled=!state.rows.length;
-    $('#load').disabled=state.running||busy||!book||excelColumn<0||(state.action==='price'&&priceColumn<0);
-    $('#reset').disabled=state.running||busy;
-    $('#legacyPrices').disabled=state.running||busy;
+    $('#load').disabled=state.running||busy||fastActive.size>0||!book||excelColumn<0||(state.action==='price'&&priceColumn<0);
+    $('#reset').disabled=state.running||busy||fastActive.size>0;
+    $('#legacyPrices').disabled=state.running||busy||fastActive.size>0;
     const oldPrice=GM_getValue(PRICE_KEY,null);
     $('#legacyPrices').classList.toggle('hidden',
       !oldPrice||!Array.isArray(oldPrice.rows)||!oldPrice.rows.length);
-    $('#priceColumn').disabled=state.running||busy||!book;
+    $('#priceColumn').disabled=state.running||busy||fastActive.size>0||!book;
+    $('#processingMode').disabled=state.running||busy||fastActive.size>0||!!state.started;
+    $('#fastWorkers').disabled=state.running||busy||fastActive.size>0;
+    $('#fastWorkersWrap').classList.toggle('hidden',state.settings.mode!=='fast');
+    $('#delay').disabled=state.settings.mode==='fast'||state.running||busy;
     $('#footer').textContent=state.updated?'Сохранено · '+new Date(state.updated).toLocaleTimeString('ru-RU'):
       'Очередь сохраняется автоматически';
     const labelsForFilter={
@@ -1673,10 +1704,17 @@
     return;
   }
   mount();
+  if(state.settings.mode==='fast' && state.running)fastRecoverAfterReload();
   if(state.running && state.owner === tabId) {
     if(claim()) {
-      log('info','Возобновление после перехода или перезагрузки вкладки.');
-      schedule(250);
+      if(state.settings.mode==='fast'){
+        fastLimit=Math.min(10,Math.max(1,Number(state.settings.workers)||5));
+        fastLog('warn','Восстановление быстрого режима после обновления страницы.',null,true);
+        fastPump();
+      }else{
+        log('info','Возобновление после перехода или перезагрузки вкладки.');
+        schedule(250);
+      }
     } else {
       state.running=false;state.paused=true;persist();
     }
