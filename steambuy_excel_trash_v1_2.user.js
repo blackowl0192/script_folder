@@ -771,6 +771,16 @@
   // === Independent product regular-price queue (separate from Trash/Private) ===
   function priceCurrent(){return priceState.rows[priceState.index]||null;}
   function priceNext(){return priceState.rows.findIndex(r=>r.status==='pending');}
+  function priceCanEdit(){
+    const lease=GM_getValue(PRICE_LEASE,null);
+    if(lease&&lease.until>Date.now()&&lease.id!==tabId){
+      toast('Очередь цен используется другой вкладкой.');return false;
+    }
+    if(priceState.running||state.running||priceBusy||busy){
+      toast('Сначала остановите текущую обработку.');return false;
+    }
+    return true;
+  }
   function priceOwnLease(){
     const lease=GM_getValue(PRICE_LEASE,null);
     return !!(lease&&lease.id===tabId&&lease.until>Date.now());
@@ -920,6 +930,8 @@
     const update=document.querySelector('#publish');
     if(!input||!update)
       return priceFinalize(row,'failed','Не найдено поле #_regular_price или кнопка Update (#publish).');
+    if(input.disabled)
+      return priceFinalize(row,'failed','Поле Regular price недоступно (disabled).');
     if(update.disabled)
       return priceFinalize(row,'failed','Кнопка Update недоступна (disabled).');
     const updateLabel=clean(update.value||update.textContent);
@@ -1046,8 +1058,7 @@
     priceSchedule();
   }
   async function priceReadExcel(file){
-    if(!file)return;
-    if(priceState.running||state.running||priceBusy||busy)return toast('Сначала остановите обработку.');
+    if(!file||!priceCanEdit())return;
     try{
       if(typeof XLSX==='undefined')throw new Error('Библиотека Excel XLSX недоступна.');
       if(file.size>25*1024*1024)throw new Error('Файл больше 25 МБ.');
@@ -1082,7 +1093,7 @@
     $('#priceLoad').disabled=head.length<2;
   }
   function priceImport(){
-    if(!priceBook||priceState.running||state.running||priceBusy||busy)return;
+    if(!priceBook||!priceCanEdit())return;
     const grid=priceGrid(),lc=Number($('#priceLinkCol').value),pc=Number($('#priceValueCol').value);
     if(lc===pc||!Number.isInteger(lc)||!Number.isInteger(pc))
       return toast('Выберите два разных столбца: product_link и price.');
@@ -1124,7 +1135,7 @@
       rows.filter(r=>r.status==='skipped').length+'.');
   }
   function priceReset(){
-    if(priceState.running||state.running||priceBusy||busy)return toast('Сначала остановите обработку.');
+    if(!priceCanEdit())return;
     if(!confirm('Сбросить очередь, цены и журнал? Изменённые цены на сайте останутся.'))return;
     priceRelease();priceState=priceDefaults();priceBook=null;priceFileName='';
     $('#priceFile').value='';$('#priceFileName').textContent='Файл не выбран';
@@ -1231,6 +1242,10 @@
     $('#priceNext').onclick=()=>{pricePage++;renderPrices();};
     $('#priceDelay').value=priceState.delay;
     $('#priceDelay').onchange=e=>{
+      const lock=GM_getValue(PRICE_LEASE,null);
+      if(lock&&lock.until>Date.now()&&lock.id!==tabId){
+        e.target.value=priceState.delay;return toast('Очередь цен выполняется в другой вкладке.');
+      }
       priceState.delay=Math.round(Math.min(30,Math.max(0.5,Number(e.target.value)||0.5))*2)/2;
       e.target.value=priceState.delay;pricePersist();
     };
