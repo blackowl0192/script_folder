@@ -751,7 +751,9 @@
     if (!confirm('Сбросить импорт, результаты и журнал для ' + DOMAIN +
       '?\nТовары, уже помещённые в корзину, не восстановятся.')) return;
     release();
-    state=defaults();book=null;fileName='';excelColumn=-1;priceColumn=-1;
+    const previousSettings={...state.settings};
+    state=defaults();state.settings=Object.assign(state.settings,previousSettings);
+    book=null;fileName='';excelColumn=-1;priceColumn=-1;
     $('#file').value='';
     $('#filename').textContent='Файл не выбран';
     $('#mapping').classList.add('hidden');
@@ -904,8 +906,9 @@
     const good=rows.filter(r=>r.status==='pending').length;
     if(!good)return toast('Нет корректных ссылок на редактор товаров этого сайта.');
     if(state.rows.length&&!confirm('Заменить прежнюю очередь для '+DOMAIN+'? Вы можете сначала скачать отчёт.'))return;
-    const chosenAction=state.action, chosenDelay=state.settings.delay;
-    state=defaults();state.action=chosenAction;state.settings.delay=chosenDelay;state.filename=fileName;state.sheet=book.SheetNames[Number($('#sheet').value)];state.rows=rows;
+    const chosenAction=state.action, chosenSettings={...state.settings};
+    state=defaults();state.action=chosenAction;
+    state.settings=Object.assign(state.settings,chosenSettings);state.filename=fileName;state.sheet=book.SheetNames[Number($('#sheet').value)];state.rows=rows;
     for(const r of rows){
       if(r.status!=='skipped')continue;
       state.logs.push({time:now(),level:'warn',id:r.id,row:r.excelRow,
@@ -1331,6 +1334,11 @@
         row.status='pending';row.fastStage='';changed=true;
       }
     }
+    // One-item test must never silently continue with the next row after a reload.
+    if(state.mode==='one'&&state.running){
+      state.running=false;state.paused=true;state.runCount=Math.max(1,state.runCount);
+      changed=true;
+    }
     if(changed){
       state.index=-1;state.phase='fast';
       state.logs.push({time:now(),level:'warn',id:'',row:'',
@@ -1704,7 +1712,7 @@
     return;
   }
   mount();
-  if(state.settings.mode==='fast' && state.running)fastRecoverAfterReload();
+  if(state.settings.mode==='fast')fastRecoverAfterReload();
   if(state.running && state.owner === tabId) {
     if(claim()) {
       if(state.settings.mode==='fast'){
