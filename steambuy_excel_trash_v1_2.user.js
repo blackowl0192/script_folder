@@ -135,6 +135,11 @@
     return lease && lease.id === tabId && lease.until > Date.now();
   }
   function claim() {
+    const former=GM_getValue(PRICE_LEASE,null);
+    if(former&&former.until>Date.now()){
+      toast('Старая версия редактора цен ещё выполняется. Остановите её и обновите вкладку.');
+      return false;
+    }
     const previous = GM_getValue(OLD_LEASE, null);
     if(previous && previous.until > Date.now()) {
       log('warn','Старт заблокирован: предыдущая версия скрипта ещё работает в другой вкладке.');
@@ -700,6 +705,8 @@
     const pendingAction=state.pending?.action || (state.pending && ['verify','verifying','deleting'].includes(state.phase)?'trash':'');
     const selected=clean(state.action);
     if(!['trash','private','price'].includes(selected)&&!pendingAction){log('error','Запуск невозможен: действие не выбрано.');return toast('Выберите действие с товарами.');}
+    if(state.rows.some(r=>r.status==='pending'&&r.action&&r.action!==selected))
+      return toast('Вы изменили действие после импорта. Загрузите Excel в очередь заново.');
     if(selected==='price' && state.rows.some(r=>r.status==='pending' &&
       (!r.price || !Number.isSafeInteger(r.cents))))
       return toast('В очереди нет подготовленных цен. Выберите «Редактировать цену» и импортируйте Excel заново.');
@@ -866,7 +873,7 @@
     const seen=new Set(),rows=[];
     for(let i=1;i<data.length;i++){
       const raw=clean(linkCell(data,i,col));
-      if(!raw)continue;
+      if(!raw && !(isPrice&&clean(data[i]?.[pc])))continue;
       const row={excelRow:i+1,productLink:raw,id:'',name:'',status:'pending',
         message:'',foundName:'',wpPostId:'',finished:'',action:state.action,
         rawPrice:isPrice?clean(data[i]?.[pc]):'',price:'',cents:null,before:'',after:''};
@@ -985,8 +992,7 @@
     '.view{padding:12px 16px;min-height:0;flex:1;overflow:auto}.hidden{display:none!important}.tools{display:flex;gap:8px;margin-bottom:10px}input,select{border:1px solid #dce3ed;border-radius:8px;background:#fff;padding:8px;color:#22324a;min-width:0}input[type=search]{flex:1}table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px}th{text-align:left;color:#7c899b;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:8px 6px;background:#f7f9fc;position:sticky;top:0}td{padding:10px 6px;border-bottom:1px solid #edf1f6;vertical-align:top}tr.currentrow{background:#eff5ff}td .title{font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}td small{color:#8290a2;display:block;font-size:10px;overflow-wrap:anywhere}.badge{font-size:10px;padding:3px 7px;border-radius:6px;display:inline-block;white-space:nowrap;background:#eef2f7;color:#62738a}.badge.done{background:#e4f5ec;color:#147c55}.badge.bad{background:#fff0e8;color:#b24b28}.badge.uncertain{background:#fff6dc;color:#956400}.badge.work{background:#e7efff;color:#2b62ce}',
     '.foot{padding:10px 16px;border-top:1px solid #e4eaf2;display:flex;align-items:center;gap:8px;background:#fafbfd;font-size:11px;color:#7a889a}.foot span:first-child{flex:1}.foot button{padding:4px 8px;font-size:11px}.empty{text-align:center;padding:28px 16px;color:#77869b}.empty b{display:block;color:#31435c;font-size:16px;margin-bottom:6px}.drop{border:2px dashed #c4d2e9;border-radius:12px;text-align:center;padding:20px;margin:4px 0 12px;background:#f7faff}.drop.over{border-color:#3468df;background:#eaf1ff}.drop label{cursor:pointer;color:#2b63d4;font-weight:700}.drop small{display:block;margin-top:5px;color:#7b8a9e}.mapping{display:grid;grid-template-columns:120px 1fr;gap:8px;align-items:center}.mapping label{color:#61728a}.hint{font-size:12px;color:#6d7e94;margin:10px 0}.logline{display:grid;grid-template-columns:80px 80px 1fr;gap:8px;padding:8px 0;border-bottom:1px solid #edf1f6;font-size:11px;overflow-wrap:anywhere}.logline.error{color:#a83f2f}.logline.ok{color:#147c55}.logline.warn{color:#955e0d}',
     '.pill{position:fixed;right:22px;bottom:20px;border-radius:14px;background:#14263e;color:#fff;padding:12px 18px;box-shadow:0 8px 30px #0f233b40;pointer-events:auto}.pill:hover{background:#24466b;color:white}.notice{position:absolute;bottom:54px;left:16px;right:16px;z-index:8;padding:12px;background:#fff7e7;border:1px solid #e3cdab;border-radius:10px;color:#75551f;box-shadow:0 6px 20px #0002}.notice button{float:right;padding:0 6px;margin-right:5px}.help h3{font-size:13px;color:#263d5c}.help p,.help li{font-size:12px;color:#61728a}.help ol{padding-left:20px}.setting{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #edf1f6}.setting input[type=number]{width:80px}.setting small{display:block;color:#7a899c}',
-    '.price-section{display:flex;flex-direction:column;gap:10px}.price-section h3{font-size:15px;margin:4px 0 0;color:#223a58}.price-section h4{font-size:12px;margin:8px 0 0;color:#34465d}.price-section p{margin:0}.price-summary{padding:10px;background:#f5f8fd;border:1px solid #e3eaf5;border-radius:9px;font-size:12px;line-height:1.7}.price-now{font-size:12px;color:#405977}.price-actions{display:flex;gap:6px;flex-wrap:wrap}.price-mapping{display:grid;grid-template-columns:120px 1fr;gap:8px;align-items:center}.price-mapping label{font-size:11px;font-weight:650}.price-mapping select{width:100%}.price-table{min-height:100px;max-height:250px;overflow:auto}.price-logs{max-height:185px;overflow:auto;border:1px solid #e5ebf2;border-radius:9px;padding:6px 10px}.price-pager{display:flex;align-items:center;gap:8px}.price-pager span{margin:0 8px;font-size:12px;color:#526480}.price-grid{display:grid;grid-template-columns:minmax(0,1fr) 160px;gap:10px}',
-    '.logfilters{display:grid;grid-template-columns:minmax(0,1fr) 160px 120px;gap:8px}.logsummary{justify-content:space-between;align-items:center;color:#64758c;font-size:11px}.loglist{display:grid;gap:5px}.logline{grid-template-columns:90px 85px 1fr!important;gap:8px;background:#f9fbff;border:1px solid #e5ebf4;border-radius:9px;padding:10px 12px!important;color:#324960;font-size:12px!important}.logline>span:last-child{line-height:1.55;overflow-wrap:anywhere;white-space:pre-wrap}.logline time{color:#657a95;font-variant-numeric:tabular-nums}.logline.warn{border-left:3px solid #c8942a}.logline.error{border-left:3px solid #b55346}.logline.ok{border-left:3px solid #4c9a73}@media(max-width:550px){.logfilters{grid-template-columns:1fr 1fr}.logfilters input{grid-column:1/-1}.logline{grid-template-columns:70px 60px 1fr!important;padding:8px!important}}',
+    '.logfilters{display:grid;grid-template-columns:minmax(0,1fr) 160px 120px;gap:8px}.logsummary{justify-content:space-between;align-items:center;color:#64758c;font-size:11px}.loglist{display:grid;gap:5px}.logline{grid-template-columns:85px 145px 1fr!important;gap:8px;background:#f9fbff;border:1px solid #e5ebf4;border-radius:9px;padding:10px 12px!important;color:#324960;font-size:12px!important}.logline>span:last-child{line-height:1.55;overflow-wrap:anywhere;white-space:pre-wrap}.logline time{color:#657a95;font-variant-numeric:tabular-nums}.logtitle{display:block;color:#728096;overflow-wrap:anywhere;font-size:10px;line-height:1.4}.logline.warn{border-left:3px solid #c8942a}.logline.error{border-left:3px solid #b55346}.logline.ok{border-left:3px solid #4c9a73}@media(max-width:550px){.logfilters{grid-template-columns:1fr 1fr}.logfilters input{grid-column:1/-1}.logline{grid-template-columns:70px 100px 1fr!important;padding:8px!important}}',
     '@media(max-width:550px){.panel{right:8px;bottom:8px;max-width:calc(100vw - 16px)}.stats{gap:4px}.card{padding:7px}.tabs{gap:12px}.actions button{font-size:11px;padding:7px}}'
   ].join('');
   function mount() {
@@ -1221,16 +1227,18 @@
       ).join('')+'</tbody></table>';
   }
   function renderLogs() {
-    const query=normalized(logSearch);
+    const query=normalized(logSearch),names=new Map(
+      state.rows.filter(r=>r.id).map(r=>[r.id,r.foundName||'']));
     const found=state.logs.filter(x=>(logLevel==='all'||x.level===logLevel) &&
-      normalized(x.id+' '+x.row+' '+x.message).includes(query));
+      normalized(x.id+' '+x.row+' '+x.message+' '+(names.get(x.id)||'')).includes(query));
     const latest=found.slice(-logLimit).reverse();
     $('#logFound').textContent='Найдено: '+found.length+' из '+state.logs.length+
       ' · показано '+latest.length;
     $('#logs').innerHTML=latest.map(x=>
       '<div class="logline '+esc(x.level)+'"><time>'+esc(new Date(x.time).toLocaleTimeString('ru-RU'))+
-      '</time><span>'+esc(x.id?'ID '+x.id:'Система')+'</span>'+
-      '<span>'+esc(x.message)+'</span></div>'
+      '</time><span>'+esc(x.id?'ID '+x.id:'Система')+
+      (names.get(x.id)?'<small class="logtitle">'+esc(names.get(x.id))+'</small>':'')+
+      '</span><span>'+esc(x.message)+'</span></div>'
     ).join('')||'<div class="empty">Нет сообщений по выбранному фильтру.</div>';
   }
   function render() {
