@@ -925,13 +925,15 @@
     if(typeof XLSX==='undefined')return toast('Библиотека XLSX недоступна.');
     const cols=['Строка Excel','product_link','ID из ссылки','Название на сайте','Действие',
       'Цена из Excel','Нормализованная цена','Цена до','Цена после',
-      'Статус','Комментарий','Завершено'];
+      'Режим','Поток','Время (с)','Статус','Комментарий','Завершено'];
     const line=r=>[r.excelRow,r.productLink,r.id,r.foundName,actionName(r.action||state.action),
-      r.rawPrice||'',r.price||'',r.before||'',r.after||'',rowLabel(r),r.message,r.finished];
+      r.rawPrice||'',r.price||'',r.before||'',r.after||'',
+      r.fastWorker?'Быстрый':'Совместимый',r.fastWorker||'',
+      r.elapsedMs!=null?Number((r.elapsedMs/1000).toFixed(2)):'',rowLabel(r),r.message,r.finished];
     const wb=XLSX.utils.book_new();
     const add=(name,rows)=>{
       const ws=XLSX.utils.aoa_to_sheet([cols,...rows.map(line)]);
-      ws['!cols']=[{wch:13},{wch:95},{wch:18},{wch:40},{wch:25},{wch:20},{wch:20},{wch:16},{wch:16},{wch:22},{wch:95},{wch:25}];
+      ws['!cols']=[{wch:13},{wch:95},{wch:18},{wch:40},{wch:25},{wch:20},{wch:20},{wch:16},{wch:16},{wch:15},{wch:10},{wch:13},{wch:22},{wch:95},{wch:25}];
       XLSX.utils.book_append_sheet(wb,ws,name);
     };
     add('Все товары',state.rows);
