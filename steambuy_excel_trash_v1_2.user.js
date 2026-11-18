@@ -1188,7 +1188,7 @@
     activeTab=tab;page=0;
     for(const name of ['queue','log','import','help'])
       $('#'+name).classList.toggle('hidden',name!==tab);
-    $('[data-tab]').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
+    $$('[data-tab]').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
     render();
   }
   function subset() {
@@ -1293,7 +1293,7 @@
       not_found:'Не найдены ('+missing+')',failed:'Ошибки обработки ('+error+')',
       unconfirmed:'Не подтверждено ('+unconfirmed+')',skipped:'Пропущено ('+count('skipped')+')'
     };
-    $('#filter option').forEach(opt=>{
+    $$('#filter option').forEach(opt=>{
       if(labelsForFilter[opt.value])opt.textContent=labelsForFilter[opt.value];
     });
     if(activeTab==='queue')renderRows();
