@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Product Manager — Trash / Private / Prices
 // @namespace    https://steambuy.pro/
-// @version      2.5.0
+// @version      2.6.0
 // @description  Единая Excel-очередь: Trash, Private или Regular price (€). 4 вкладки, фильтры и журнал; 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -31,7 +31,7 @@
 (() => {
   'use strict';
   // Keep v3 queues, but require explicit action selection after upgrading to v2.2.
-  const VERSION = '2.5.0';
+  const VERSION = '2.6.0';
   const DOMAIN = location.hostname;
   const PREFIX = 'sb-product-trash-v3:' + DOMAIN;
   const OLD_LEASE = 'sb-product-trash-v2:' + DOMAIN + ':lease';
@@ -61,11 +61,13 @@
     v: 3, schema: 2, action: '', filename: '', sheet: '', rows: [], logs: [], index: -1,
     phase: 'idle', running: false, paused: false, mode: 'batch', runCount: 0,
     owner: '', pending: null,
-    settings: { delay: 1 }, updated: '', started: ''
+    settings: { delay: 1, mode: 'compatible', workers: 5 }, updated: '', started: ''
   });
   let state = GM_getValue(KEY, null) || defaults();
   if (state.v !== 3 || !Array.isArray(state.rows)) state = defaults();
-  state.settings = Object.assign({delay: 1}, state.settings || {});
+  state.settings = Object.assign({delay: 1,mode:'compatible',workers:5}, state.settings || {});
+  if(!['compatible','fast'].includes(state.settings.mode))state.settings.mode='compatible';
+  state.settings.workers=Math.max(1,Math.min(10,Number(state.settings.workers)||5));
   // Older v2.1 runs were delete-only. Pause on upgrade rather than silently continuing Trash.
   if(state.schema !== 2){
     const currentRow=state.rows[state.index];
@@ -88,6 +90,8 @@
   let logLevel=sessionStorage.getItem(PREFIX+':ui:logLevel')||'all';
   let logLimit=Number(sessionStorage.getItem(PREFIX+':ui:logLimit'))||100;
   let busy = false, moving = false, timer = null, heartbeat = null, expanded = false, dragging = null;
+  const fastActive=new Map();
+  let fastSaveTimer=null,fastPaintTimer=null,fastLimit=5,fastErrors=0,fastSerial=0,fastPausedNotice=false;
   const labels = {pending:'Ожидает', opening:'Открытие', deleting:'Удаляется',
     saving:'Сохранение', verifying:'Проверка',done:'Выполнено',
     not_found:'Не найден', failed:'Ошибка обработки', unconfirmed:'Не подтверждено', skipped:'Пропущен'};
@@ -164,11 +168,12 @@
   function startHeartbeat() {
     clearInterval(heartbeat);
     heartbeat = setInterval(() => {
-      if (!state.running || !ownLease()) { clearInterval(heartbeat); return; }
+      if ((!state.running&&!fastActive.size) || !ownLease()) { clearInterval(heartbeat); return; }
       GM_setValue(LEASE, {id:tabId,until:Date.now() + 25000});
     },4000);
   }
   function release() {
+    if(fastActive.size)return; // In-flight POST/Trash must finish before releasing the lease.
     clearInterval(heartbeat);
     if (ownLease()) GM_setValue(LEASE, null);
   }
@@ -178,7 +183,7 @@
   }
   function canEdit() {
     const lease = GM_getValue(LEASE,null);
-    if (busy || (state.running && (state.owner===tabId || (lease && lease.until>Date.now())))) {
+    if (busy || fastActive.size || (state.running && (state.owner===tabId || (lease && lease.until>Date.now())))) {
       toast('Сначала приостановите обработку.'); return false;
     }
     if (lease && lease.until > Date.now() && lease.id !== tabId) {
@@ -233,7 +238,7 @@
     clearTimeout(timer);
     state.running = false;
     state.paused = true;
-    log('info', reason, current());
+    log('info', reason+(fastActive.size?' Активные запросы ('+fastActive.size+') завершатся без запуска новых.':''), current());
     release();
   }
   function stop() { pause('Остановлено пользователем. Сохранённые результаты не потеряны.'); }
@@ -703,7 +708,8 @@
     state.phase='open';openProduct(row);
   }
   function start(one=false) {
-    if(busy||moving)return toast('Дождитесь завершения текущего действия.');
+    if(busy||moving||fastActive.size)return toast('Дождитесь завершения текущих запросов.');
+    if(state.settings.mode==='fast')return fastStart(one);
     readState();
     if(!state.rows.length){log('error','Запуск невозможен: очередь product_link пуста.');return toast('Сначала загрузите Excel со столбцом product_link.');}
     const pendingAction=state.pending?.action || (state.pending && ['verify','verifying','deleting'].includes(state.phase)?'trash':'');
@@ -984,6 +990,351 @@
     const cents=Number(whole)*100+Number(fract.padEnd(2,'0')||'0');
     if(!Number.isSafeInteger(cents))throw new Error('Слишком большая цена.');
     return {value:whole+(fract?','+fract.padEnd(2,'0'):''),cents};
+  }
+
+
+  // === Fast mode: bounded same-origin fetch workers; no page navigation or image loading. ===
+  function fastSave(critical=false) {
+    if(critical){
+      clearTimeout(fastSaveTimer);fastSaveTimer=null;
+      state.updated=now();GM_setValue(KEY,state);
+    }else if(!fastSaveTimer){
+      fastSaveTimer=setTimeout(()=>{
+        fastSaveTimer=null;state.updated=now();GM_setValue(KEY,state);
+      },160);
+    }
+    if(!fastPaintTimer){
+      fastPaintTimer=setTimeout(()=>{
+        fastPaintTimer=null;
+        try{render();}catch(e){console.error('[Product Manager: fast UI]',e);}
+      },250);
+    }
+  }
+  function fastLog(level,message,row,critical=false){
+    state.logs.push({time:now(),level,id:row?.id||'',row:row?.excelRow||'',message});
+    if(state.logs.length>MAX_LOGS)state.logs.splice(0,state.logs.length-MAX_LOGS);
+    fastSave(critical);
+  }
+  function fastReadyToWrite(row) {
+    return state.running && state.owner===tabId && ownLease() &&
+      fastActive.has(row.id);
+  }
+  function fastNoWriteOnPause(row) {
+    if(fastReadyToWrite(row))return false;
+    row.status='pending';row.fastStage='';row.message='Пауза до сохранения: товар не изменён.';
+    fastLog('info','ID '+row.id+': остановлено до отправки изменений.',row,true);
+    return true;
+  }
+  function fastFinish(row,status,message,elapsed=0){
+    if(TERMINAL.has(row.status))return;
+    row.status=status;row.message=message;row.fastStage='';
+    row.finished=now();row.elapsedMs=Math.round(elapsed);
+    state.runCount++;
+    fastLog(status==='done'||status==='unchanged'?'ok':
+      status==='failed'?'error':'warn',
+      '['+actionName(row.action)+'] '+message+
+      (elapsed?' ('+(elapsed/1000).toFixed(2)+' с)':''),row);
+    if(state.mode==='one'&&state.runCount>=1){
+      state.running=false;state.paused=true;
+      fastLog('info','Тест одного товара завершён. Остальная очередь не затронута.',row,true);
+    }
+  }
+  function fastUrlAllowed(raw){
+    const u=new URL(raw,location.href);
+    if(u.origin!==location.origin||!u.pathname.startsWith('/wp-admin/')||
+      u.username||u.password)throw new Error('Переход за пределы текущего wp-admin заблокирован.');
+    return u;
+  }
+  async function fastRequest(url,options={}) {
+    const u=fastUrlAllowed(url);
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),30000);
+    let response;
+    try{
+      response=await fetch(u.href,{credentials:'same-origin',redirect:'follow',
+        cache:'no-store',signal:controller.signal,...options});
+      const final=fastUrlAllowed(response.url||u.href);
+      if(final.pathname.endsWith('/wp-login.php'))
+        throw new Error('Требуется авторизация WordPress (redirect wp-login.php).');
+      if(!response.ok){
+        const ex=new Error('HTTP '+response.status+' при запросе '+u.pathname);
+        ex.httpStatus=response.status;throw ex;
+      }
+      const mime=response.headers?.get('content-type')||'';
+      if(mime&&!/(html|text\/plain|application\/xhtml)/i.test(mime))
+        throw new Error('Неожиданный тип ответа: '+mime);
+      const html=await response.text();
+      // DOMParser may otherwise start downloads from <img> in some browsers.
+      // Strip media tags BEFORE parsing. CSS/JS/fonts never execute in the inert document.
+      const lightweight=html.replace(/<img\b[^>]*>/gi,'')
+        .replace(/<source\b[^>]*>/gi,'')
+        .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe\s*>/gi,'')
+        .replace(/<video\b[^>]*>[\s\S]*?<\/video\s*>/gi,'');
+      const doc=new DOMParser().parseFromString(lightweight,'text/html');
+      if(doc.querySelector('#loginform'))
+        throw new Error('Требуется войти в WordPress.');
+      const die=doc.querySelector('.wp-die-message');
+      if(die)throw new Error('WordPress: '+clean(die.textContent).slice(0,200));
+      return {doc,url:final,response};
+    }finally{clearTimeout(timeout);}
+  }
+  function fastEditor(row,doc) {
+    const form=doc.querySelector('form#post');
+    const id=clean(doc.querySelector('#post_ID,input[name="post_ID"]')?.value);
+    const type=clean(doc.querySelector('#post_type,input[name="post_type"]')?.value)||
+      (doc.body?.classList.contains('post-type-product')?'product':'');
+    if(id!==row.id||type!=='product')
+      throw new Error('ID или тип товара не совпадает: ожидался product '+row.id+
+        ', получено '+(type||'—')+' '+(id||'—')+'.');
+    if(!form)throw new Error('На странице отсутствует форма form#post.');
+    const editpost=form.querySelector('input[name="action"][value="editpost"]');
+    const nonce=form.querySelector('input[name="_wpnonce"]');
+    const button=form.querySelector('#publish');
+    const label=clean(button?.value||button?.textContent);
+    if(!editpost||!nonce?.value||!button||button.disabled||
+      !/^(?:update|обновить)$/i.test(label))
+      throw new Error('Не подтверждены безопасная форма editpost, nonce или кнопка Update.');
+    const action=fastUrlAllowed(new URL(form.getAttribute('action')||'post.php',row.productLink).href);
+    if(action.pathname!=='/wp-admin/post.php')
+      throw new Error('Отправка формы вне /wp-admin/post.php запрещена.');
+    if(form.getAttribute('method')?.toLowerCase()!=='post')
+      throw new Error('Форма не использует метод POST.');
+    return {form,action:action.href,button};
+  }
+  function fastPayload(row,editor){
+    const data=new FormData(editor.form);
+    if(clean(data.get('post_ID'))!==row.id||
+      clean(data.get('action'))!=='editpost'||!clean(data.get('_wpnonce')))
+      throw new Error('Поля ID, action или nonce в форме не совпадают.');
+    data.set('save',clean(editor.button.value)||'Update');
+    return data;
+  }
+  function fastPrepareSubmission(row){
+    row.fastStage='submitted';row.status='saving';
+    row.message='Запрос на сохранение отправляется; повторно не отправлять.';
+    fastLog('info','ID '+row.id+': этап сохранения, установлен контроль от повторного Update/Trash.',row,true);
+  }
+  function fastResultDoc(row,doc,kind){
+    const id=clean(doc.querySelector('#post_ID,input[name="post_ID"]')?.value);
+    const type=clean(doc.querySelector('#post_type,input[name="post_type"]')?.value)||
+      (doc.body?.classList.contains('post-type-product')?'product':'');
+    if(id!==row.id||type!=='product')return {confirmed:false,reason:'нет редактора с ожидаемым ID'};
+    if(kind==='price'){
+      const raw=clean(doc.querySelector('#_regular_price')?.value);
+      row.after=raw;
+      try{
+        if(parseRegularPrice(raw).cents===row.cents)
+          return {confirmed:true,detail:'Regular price: '+raw};
+      }catch{/* field is empty or malformed */}
+      return {confirmed:false,reason:'ожидалось '+row.price+', получено '+(raw||'пусто')};
+    }
+    const info=privateVisibility(doc);
+    return info.id===row.id&&info.type==='product'&&info.isPrivate?
+      {confirmed:true,detail:'Visibility Private'}:
+      {confirmed:false,reason:'сохранённая Visibility не подтверждена'};
+  }
+  async function fastVerifySaved(row,postResult,kind){
+    let result=fastResultDoc(row,postResult.doc,kind);
+    if(result.confirmed)return result;
+    // The POST response may be a short/partial admin reply; exactly one read-only fallback.
+    const verify=await fastRequest(row.productLink);
+    result=fastResultDoc(row,verify.doc,kind);
+    return result;
+  }
+  function fastTrashEvidence(row,result){
+    const u=result.url,ids=u.searchParams.get('ids'),trashed=u.searchParams.get('trashed');
+    if(ids&&ids.split(/[,\s]+/).some(id=>id&&id!==row.id))
+      return {confirmed:false,reason:'в URL перенаправления указан другой ID: '+ids};
+    if(u.pathname==='/wp-admin/edit.php'&&trashed==='1'&&(!ids||ids.split(/[,\s]+/).includes(row.id)))
+      return {confirmed:true,reason:'WordPress trashed=1'+(ids?' ID '+ids:'')};
+    const notices=Array.from(result.doc.querySelectorAll('.notice-success,.updated,#message'))
+      .map(x=>clean(x.textContent)).filter(Boolean);
+    const evidence=notices.find(t=>/(?:moved|sent|put).{0,90}trash|trash.{0,90}(?:moved|sent|put)|перемещен.{0,60}корзин|отправлен.{0,60}корзин/i.test(t));
+    if(u.pathname==='/wp-admin/edit.php'&&evidence)
+      return {confirmed:true,reason:evidence.slice(0,150)};
+    return {confirmed:false,reason:'нет подтверждения Trash в ответе WordPress'};
+  }
+  async function fastProcess(row,worker) {
+    const started=performance.now();
+    let stage='read';
+    try{
+      row.fastWorker=worker;row.fastStage='loading';row.status='opening';
+      row.message='Поток '+worker+': получаем HTML без картинок.';
+      fastLog('info','Поток '+worker+' · ID '+row.id+': GET редактора, без отображения страницы и загрузки изображений.',row);
+      const opened=await fastRequest(row.productLink);
+      const doc=opened.doc;
+      // Check exact URL/product identity before touching any product.
+      const hiddenId=clean(doc.querySelector('#post_ID,input[name="post_ID"]')?.value);
+      const type=clean(doc.querySelector('#post_type,input[name="post_type"]')?.value)||
+        (doc.body?.classList.contains('post-type-product')?'product':'');
+      if(hiddenId!==row.id||type!=='product')
+        throw new Error('Неверная карточка товара: '+type+' '+hiddenId+' (ожидался '+row.id+').');
+      row.foundName=clean(doc.querySelector('#title,input[name="post_title"]')?.value)||'';
+      if(row.action==='trash'){
+        const anchor=doc.querySelector('#delete-action a.submitdelete.deletion')||
+          doc.querySelector('#delete-action a.submitdelete');
+        const link=safeTrashLink(anchor,row);
+        if(!link)throw new Error('Неверная или отсутствующая ссылка Trash с ID и nonce.');
+        if(fastNoWriteOnPause(row))return;
+        fastPrepareSubmission(row);
+        stage='write';
+        const res=await fastRequest(link);
+        const confirmation=fastTrashEvidence(row,res);
+        fastFinish(row,confirmation.confirmed?'done':'unconfirmed',
+          confirmation.confirmed?'Товар ID '+row.id+' перемещён в Trash. '+confirmation.reason:
+          'Trash отправлен, но результат не подтверждён: '+confirmation.reason,
+          performance.now()-started);
+        return;
+      }
+      const editor=fastEditor(row,doc);
+      const payload=fastPayload(row,editor);
+      if(row.action==='price'){
+        const field=editor.form.querySelector('#_regular_price');
+        if(!field||field.disabled||field.name!=='_regular_price')
+          throw new Error('Отсутствует редактируемое поле _regular_price.');
+        if(!Number.isSafeInteger(row.cents)||!row.price)
+          throw new Error('В Excel нет корректной цены.');
+        row.before=clean(field.value);
+        try{
+          if(parseRegularPrice(row.before).cents===row.cents){
+            row.after=row.before;
+            return fastFinish(row,'unchanged','Цена '+row.before+' уже совпадает; Update не требуется.',performance.now()-started);
+          }
+        }catch{/* allow replacing a blank existing price */}
+        payload.set('_regular_price',row.price);
+        fastLog('info','Поток '+worker+' · ID '+row.id+': цена '+(row.before||'(пусто)')+' → '+row.price+'.',row);
+      }else if(row.action==='private'){
+        const info=privateVisibility(doc);
+        if(info.isPrivate)
+          return fastFinish(row,'done','Товар уже Private; Update не требуется.',performance.now()-started);
+        if(!editor.form.querySelector('#visibility-radio-private'))
+          throw new Error('Нет переключателя Visibility Private; быстрый POST отменён.');
+        payload.set('visibility','private');
+        payload.set('post_status','private');
+        payload.set('post_password','');
+        fastLog('info','Поток '+worker+' · ID '+row.id+': меняем Visibility на Private.',row);
+      }else throw new Error('Неизвестное действие '+row.action+'.');
+      if(fastNoWriteOnPause(row))return;
+      fastPrepareSubmission(row);
+      stage='write';
+      const res=await fastRequest(editor.action,{method:'POST',body:payload});
+      row.fastStage='verifying';stage='verify';
+      fastLog('info','ID '+row.id+': Update отправлен; сверяем результат.',row);
+      const confirmation=await fastVerifySaved(row,res,row.action);
+      if(confirmation.confirmed)
+        fastFinish(row,'done',row.action==='price'?
+          'Цена сохранена: '+(row.before||'(пусто)')+' → '+(row.after||row.price)+'.':
+          'Visibility Private подтверждена после Update.',
+          performance.now()-started);
+      else fastFinish(row,'unconfirmed','Update выполнен, но сохранение не подтверждено: '+
+        confirmation.reason+'. Повторный Update не выполняется.',performance.now()-started);
+    }catch(e){
+      const message=String(e?.message||e),submitted=stage!=='read';
+      const code=e?.httpStatus||0;
+      if([429,502,503,504].includes(code)){
+        fastErrors++;
+        fastLimit=Math.max(1,Math.floor(fastLimit/2));
+        fastLog('warn','Сервер вернул HTTP '+code+'. Параллельность снижена до '+fastLimit+'.',row);
+      }
+      fastFinish(row,submitted?'unconfirmed':'failed',
+        (submitted?'Результат операции неизвестен. Повторная запись запрещена: ':
+          'Операция не начата: ')+message,performance.now()-started);
+      if(/авторизац|войти|wp-login\.php|требуется войти/i.test(message)||[401,403].includes(code)){
+        state.running=false;state.paused=true;
+        fastLog('error','Сессия или права WordPress требуют проверки. Новые задачи остановлены.',row,true);
+      }
+    }
+  }
+  function fastPump(){
+    if(!state.running||state.settings.mode!=='fast')return;
+    if(!ownLease()){
+      state.running=false;state.paused=true;
+      fastLog('error','Очередь остановлена: потеряно управление вкладкой.',null,true);
+      return;
+    }
+    const cap=state.mode==='one'?1:Math.max(1,fastLimit);
+    while(state.running&&fastActive.size<cap){
+      const row=state.rows.find(r=>r.status==='pending');
+      if(!row)break;
+      row.action=row.action||state.action;
+      const worker=++fastSerial;
+      // Reserve synchronously to prevent two workers receiving the same ID.
+      row.status='opening';row.fastStage='loading';row.fastWorker=worker;
+      fastActive.set(row.id,true);
+      fastSave(true);
+      Promise.resolve().then(()=>fastProcess(row,worker))
+        .catch(e=>{if(!TERMINAL.has(row.status))
+          fastFinish(row,'unconfirmed','Неожиданная ошибка потока: '+String(e?.message||e));})
+        .finally(()=>{
+          fastActive.delete(row.id);
+          if(!state.running){if(!fastActive.size){fastSave(true);release();}return;}
+          if(state.mode==='one'&&state.runCount>=1){
+            state.running=false;state.paused=true;
+            fastSave(true);if(!fastActive.size)release();return;
+          }
+          if(!state.rows.some(r=>r.status==='pending')&&!fastActive.size){
+            state.running=false;state.paused=false;
+            fastLog('ok','Быстрая обработка файла завершена. Можно скачать Excel-отчёт.',null,true);
+            release();return;
+          }
+          fastPump();
+        });
+    }
+    fastSave();
+  }
+  function fastStart(one=false){
+    if(fastActive.size||busy||moving)return toast('Дождитесь завершения текущих запросов.');
+    readState();
+    if(!state.rows.length)return toast('Сначала импортируйте Excel.');
+    if(!['trash','private','price'].includes(state.action))
+      return toast('Выберите действие с товарами.');
+    const ready=state.rows.filter(r=>r.status==='pending');
+    if(!ready.length)return toast('Нет ожидающих товаров.');
+    if(ready.some(r=>r.action&&r.action!==state.action))
+      return toast('Действие в очереди отличается от выбранного. Импортируйте Excel снова.');
+    if(state.action==='price'&&ready.some(r=>!r.price||!Number.isSafeInteger(r.cents)))
+      return toast('В очереди есть товары без корректной цены.');
+    if(!claim())return;
+    if(!confirm(one?
+      'Быстрый тест одного товара? Запросы будут отправлены прямо в wp-admin.\n'+
+        'ID '+ready[0].id+' · '+actionName(state.action):
+      'Запустить быструю обработку '+ready.length+' товаров?\n'+
+        'Параллельность: '+state.settings.workers+
+        '\nДействие: '+actionName(state.action)+
+        '\nКарточки и изображения не открываются. Сначала рекомендуется тест одного товара.')){
+      release();return;
+    }
+    fastErrors=0;fastLimit=Math.min(10,Math.max(1,Number(state.settings.workers)||5));
+    state.mode=one?'one':'batch';state.runCount=0;
+    state.running=true;state.paused=false;state.owner=tabId;
+    state.phase='fast';state.index=-1;
+    if(!state.started)state.started=now();
+    fastLog('info','Быстрый режим: '+(one?'тест 1 товара':'массовая обработка')+
+      '; потоков '+(one?1:fastLimit)+'; '+actionName(state.action)+
+      '. Редактор не отображается, изображения не скачиваются.',null,true);
+    fastPump();
+  }
+  // On reload, all POST/Trash sent before the reload are NEVER submitted again.
+  function fastRecoverAfterReload(){
+    if(state.settings.mode!=='fast')return;
+    let changed=false;
+    for(const row of state.rows){
+      if(TERMINAL.has(row.status))continue;
+      if(row.fastStage==='submitted'||row.fastStage==='verifying'||
+        row.status==='saving'||row.status==='verifying'){
+        row.status='unconfirmed';row.finished=now();
+        row.message='Страница перезагружена во время сохранения. Результат требует проверки; повторной отправки нет.';
+        row.fastStage='';changed=true;
+      }else if(row.fastStage==='loading'||row.status==='opening'){
+        row.status='pending';row.fastStage='';changed=true;
+      }
+    }
+    if(changed){
+      state.index=-1;state.phase='fast';
+      state.logs.push({time:now(),level:'warn',id:'',row:'',
+        message:'Восстановление очереди после перезагрузки: операции с отправленным Update/Trash отмечены «Не подтверждено», без повторной отправки.'});
+      fastSave(true);
+    }
   }
 
   const CSS = [
