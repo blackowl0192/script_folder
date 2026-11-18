@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Product Manager — Trash / Private
+// @name         Product Manager — Trash / Private / Prices
 // @namespace    https://steambuy.pro/
 // @version      2.4.0
-// @description  Excel product_link → выбрать действие Trash или Private → открыть товар → применить → проверить; 7 сайтов.
+// @description  Excel product_link → Trash / Private / Regular price (€). Независимые очереди, журнал, отчёты; 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
 // @downloadURL  https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -801,7 +801,7 @@
   function pricePersist(){
     priceState.updated=now();
     GM_setValue(PRICE_KEY,priceState);
-    try{if(root){renderPrices();render();}}
+    try{if(root)render();}
     catch(e){console.error('[Product Manager: Prices] UI:',e);}
   }
   function priceLog(level,message,row){
@@ -922,12 +922,18 @@
       return priceFinalize(row,'failed','Не найдено поле #_regular_price или кнопка Update (#publish).');
     if(update.disabled)
       return priceFinalize(row,'failed','Кнопка Update недоступна (disabled).');
+    const updateLabel=clean(update.value||update.textContent);
+    if(!/^(?:update|обновить)$/i.test(updateLabel))
+      return priceFinalize(row,'failed','Ожидалась кнопка Update, но найдена «'+
+        (updateLabel||'без названия')+'». Чтобы случайно не опубликовать черновик, действие отменено.');
     row.foundName=clean(document.querySelector('#title,input[name="post_title"]')?.value);
     row.before=clean(input.value);
     try{
-      if(parseRegularPrice(row.before).cents===row.cents)
+      if(parseRegularPrice(row.before).cents===row.cents){
+        row.after=row.before;
         return priceFinalize(row,'unchanged','ID '+row.id+': цена уже '+row.price+
           ' (текущее значение: '+row.before+'). Update не нужен.');
+      }
     }catch{/* Empty or unexpected current price: attempt update and verify. */}
     priceLog('info','ID '+row.id+': цена '+(row.before||'(пусто)')+' → '+row.price+
       '. Заполняем Regular price (€).',row);
