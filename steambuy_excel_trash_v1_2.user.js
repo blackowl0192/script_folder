@@ -938,8 +938,9 @@
       else input.value=row.price;
       input.dispatchEvent(new Event('input',{bubbles:true}));
       input.dispatchEvent(new Event('change',{bubbles:true}));
-      if(clean(input.value)!==row.price)
-        throw new Error('Поле Regular price не приняло цену '+row.price+'.');
+      if(parseRegularPrice(input.value).cents!==row.cents)
+        throw new Error('Поле Regular price не приняло цену '+row.price+
+          ' (фактически: '+clean(input.value)+').');
     }catch(e){return priceFinalize(row,'failed','Не удалось установить цену: '+String(e?.message||e));}
     // Checkpoint BEFORE submitting. Never click Update twice, even on reload.
     priceState.phase='verify-price';
@@ -1128,8 +1129,11 @@
     if(typeof XLSX==='undefined')return toast('Библиотека XLSX недоступна.');
     const header=['Строка','ID','product_link','Название','Цена из Excel','Нормализованная цена',
       'Цена до','Цена после','Статус','Комментарий','Завершено'];
+    const names={updated:'Изменена',unchanged:'Без изменений',failed:'Ошибка',
+      unconfirmed:'Не подтверждено',not_found:'Не найден',skipped:'Пропущено',
+      pending:'Ожидает',opening:'Открывается',saving:'Сохранение',verifying:'Проверка'};
     const line=r=>[r.excelRow,r.id,r.productLink,r.foundName,r.rawPrice,r.price,
-      r.before,r.after,r.status,r.message,r.finished];
+      r.before,r.after,names[r.status]||r.status,r.message,r.finished];
     const wb=XLSX.utils.book_new();
     const add=(name,data)=>{const ws=XLSX.utils.aoa_to_sheet([header,...data.map(line)]);
       ws['!cols']=[{wch:12},{wch:16},{wch:95},{wch:35},{wch:20},{wch:21},
