@@ -81,8 +81,12 @@
     GM_setValue(KEY,state);
   }
   let root, panel, book = null, fileName = '', excelColumn = -1, priceColumn = -1;
-  let activeTab = 'queue', filter = 'all', search = '', page = 0;
-  let logSearch='',logLevel='all',logLimit=100;
+  const savedTab=sessionStorage.getItem(PREFIX+':ui:tab');
+  let activeTab=['queue','log','import','help'].includes(savedTab)?savedTab:'queue';
+  let filter=sessionStorage.getItem(PREFIX+':ui:filter')||'all',search='',page=0;
+  let logSearch=sessionStorage.getItem(PREFIX+':ui:logSearch')||'';
+  let logLevel=sessionStorage.getItem(PREFIX+':ui:logLevel')||'all';
+  let logLimit=Number(sessionStorage.getItem(PREFIX+':ui:logLimit'))||100;
   let busy = false, moving = false, timer = null, heartbeat = null, expanded = false, dragging = null;
   const labels = {pending:'Ожидает', opening:'Открытие', deleting:'Удаляется',
     saving:'Сохранение', verifying:'Проверка',done:'Выполнено',
@@ -902,6 +906,8 @@
     }
     if(state.logs.length>MAX_LOGS)state.logs.splice(0,state.logs.length-MAX_LOGS);
     log('info','Импорт '+fileName+': '+rows.length+' ссылок, к обработке '+good+', пропущено '+(rows.length-good)+'. Действие: '+actionName(state.action)+'.');
+    filter='all';$('#filter').value='all';
+    sessionStorage.setItem(PREFIX+':ui:filter','all');
     setTab('queue');
   }
   function report(){
@@ -1156,22 +1162,26 @@
     $('#prev').onclick=()=>{page=Math.max(0,page-1);renderRows();};
     $('#next').onclick=()=>{page++;renderRows();};
     $('#search').oninput=e=>{search=e.target.value;page=0;renderRows();};
-    $('#filter').onchange=e=>{filter=e.target.value;page=0;renderRows();};
+    $('#filter').onchange=e=>{filter=e.target.value;sessionStorage.setItem(PREFIX+':ui:filter',filter);page=0;renderRows();};
     $('#file').onchange=e=>readExcel(e.target.files?.[0]);
     $('#sheet').onchange=fillMapping;
     $('#priceColumn').onchange=e=>{
       priceColumn=e.target.value===''?-1:Number(e.target.value);
       fillMapping();
     };
-    $('#logSearch').oninput=e=>{logSearch=e.target.value;renderLogs();};
-    $('#logLevel').onchange=e=>{logLevel=e.target.value;renderLogs();};
-    $('#logLimit').onchange=e=>{logLimit=Number(e.target.value)||100;renderLogs();};
+    $('#logSearch').oninput=e=>{logSearch=e.target.value;sessionStorage.setItem(PREFIX+':ui:logSearch',logSearch);renderLogs();};
+    $('#logLevel').onchange=e=>{logLevel=e.target.value;sessionStorage.setItem(PREFIX+':ui:logLevel',logLevel);renderLogs();};
+    $('#logLimit').onchange=e=>{logLimit=Number(e.target.value)||100;sessionStorage.setItem(PREFIX+':ui:logLimit',String(logLimit));renderLogs();};
     
     $('#load').onclick=importQueue;
     const drop=$('#drop');
     drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('over');});
     drop.addEventListener('dragleave',()=>drop.classList.remove('over'));
     drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('over');readExcel(e.dataTransfer.files[0]);});
+    $('#filter').value=filter;
+    $('#logSearch').value=logSearch;
+    $('#logLevel').value=logLevel;
+    $('#logLimit').value=String(logLimit);
     $('#delay').value=state.settings.delay;
     $('#delay').onchange=e=>{
       if(!canEdit()){e.target.value=state.settings.delay;return;}
@@ -1182,10 +1192,10 @@
       panel.classList.add('hidden');$('#pill').classList.remove('hidden');
     }
     if(!state.rows.length)setTab('import');
-    else render();
+    else setTab(activeTab);
   }
   function setTab(tab) {
-    activeTab=tab;page=0;
+    activeTab=tab;sessionStorage.setItem(PREFIX+':ui:tab',tab);page=0;
     for(const name of ['queue','log','import','help'])
       $('#'+name).classList.toggle('hidden',name!==tab);
     $$('[data-tab]').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
