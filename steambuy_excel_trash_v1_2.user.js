@@ -1243,6 +1243,7 @@
     '.view{padding:12px 16px;min-height:0;flex:1;overflow:auto}.hidden{display:none!important}.tools{display:flex;gap:8px;margin-bottom:10px}input,select{border:1px solid #dce3ed;border-radius:8px;background:#fff;padding:8px;color:#22324a;min-width:0}input[type=search]{flex:1}table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px}th{text-align:left;color:#7c899b;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:8px 6px;background:#f7f9fc;position:sticky;top:0}td{padding:10px 6px;border-bottom:1px solid #edf1f6;vertical-align:top}tr.currentrow{background:#eff5ff}td .title{font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}td small{color:#8290a2;display:block;font-size:10px;overflow-wrap:anywhere}.badge{font-size:10px;padding:3px 7px;border-radius:6px;display:inline-block;white-space:nowrap;background:#eef2f7;color:#62738a}.badge.done{background:#e4f5ec;color:#147c55}.badge.bad{background:#fff0e8;color:#b24b28}.badge.uncertain{background:#fff6dc;color:#956400}.badge.work{background:#e7efff;color:#2b62ce}',
     '.foot{padding:10px 16px;border-top:1px solid #e4eaf2;display:flex;align-items:center;gap:8px;background:#fafbfd;font-size:11px;color:#7a889a}.foot span:first-child{flex:1}.foot button{padding:4px 8px;font-size:11px}.empty{text-align:center;padding:28px 16px;color:#77869b}.empty b{display:block;color:#31435c;font-size:16px;margin-bottom:6px}.drop{border:2px dashed #c4d2e9;border-radius:12px;text-align:center;padding:20px;margin:4px 0 12px;background:#f7faff}.drop.over{border-color:#3468df;background:#eaf1ff}.drop label{cursor:pointer;color:#2b63d4;font-weight:700}.drop small{display:block;margin-top:5px;color:#7b8a9e}.mapping{display:grid;grid-template-columns:120px 1fr;gap:8px;align-items:center}.mapping label{color:#61728a}.hint{font-size:12px;color:#6d7e94;margin:10px 0}.logline{display:grid;grid-template-columns:80px 80px 1fr;gap:8px;padding:8px 0;border-bottom:1px solid #edf1f6;font-size:11px;overflow-wrap:anywhere}.logline.error{color:#a83f2f}.logline.ok{color:#147c55}.logline.warn{color:#955e0d}',
     '.pill{position:fixed;right:22px;bottom:20px;border-radius:14px;background:#14263e;color:#fff;padding:12px 18px;box-shadow:0 8px 30px #0f233b40;pointer-events:auto}.pill:hover{background:#24466b;color:white}.notice{position:absolute;bottom:54px;left:16px;right:16px;z-index:8;padding:12px;background:#fff7e7;border:1px solid #e3cdab;border-radius:10px;color:#75551f;box-shadow:0 6px 20px #0002}.notice button{float:right;padding:0 6px;margin-right:5px}.help h3{font-size:13px;color:#263d5c}.help p,.help li{font-size:12px;color:#61728a}.help ol{padding-left:20px}.setting{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #edf1f6}.setting input[type=number]{width:80px}.setting small{display:block;color:#7a899c}',
+    '.price-section{display:flex;flex-direction:column;gap:10px}.price-section h3{font-size:15px;margin:4px 0 0;color:#223a58}.price-section h4{font-size:12px;margin:8px 0 0;color:#34465d}.price-section p{margin:0}.price-summary{padding:10px;background:#f5f8fd;border:1px solid #e3eaf5;border-radius:9px;font-size:12px;line-height:1.7}.price-now{font-size:12px;color:#405977}.price-actions{display:flex;gap:6px;flex-wrap:wrap}.price-mapping{display:grid;grid-template-columns:120px 1fr;gap:8px;align-items:center}.price-mapping label{font-size:11px;font-weight:650}.price-mapping select{width:100%}.price-table{min-height:100px;max-height:250px;overflow:auto}.price-logs{max-height:185px;overflow:auto;border:1px solid #e5ebf2;border-radius:9px;padding:6px 10px}.price-pager{display:flex;align-items:center;gap:8px}.price-pager span{margin:0 8px;font-size:12px;color:#526480}.price-grid{display:grid;grid-template-columns:minmax(0,1fr) 160px;gap:10px}',
     '@media(max-width:550px){.panel{right:8px;bottom:8px;max-width:calc(100vw - 16px)}.stats{gap:4px}.card{padding:7px}.tabs{gap:12px}.actions button{font-size:11px;padding:7px}}'
   ].join('');
   function mount() {
@@ -1251,13 +1252,14 @@
     host.style.cssText='position:fixed;z-index:2147483646;inset:0;pointer-events:none';
     document.documentElement.append(host);
     root=host.attachShadow({mode:'open'});
+    const priceHTML="\n      <div class=\"view hidden\" id=\"prices\">\n        <div class=\"price-section\">\n          <h3>Редактирование Regular price (€)</h3>\n          <p class=\"hint\">Excel/CSV: столбцы <b>product_link</b> и <b>price</b> (или «цена», «regular_price»). Пример: <b>€18,60</b> → <b>18,60</b>. Файлы цен и удаления обрабатываются отдельными очередями.</p>\n          <input id=\"priceFile\" type=\"file\" accept=\".xlsx,.xls,.csv\">\n          <small id=\"priceFileName\">Файл не выбран</small>\n          <div class=\"hidden\" id=\"priceMapping\">\n            <div class=\"price-mapping\">\n              <label for=\"priceSheet\">Лист Excel</label><select id=\"priceSheet\"></select>\n              <label for=\"priceLinkCol\">product_link</label><select id=\"priceLinkCol\"></select>\n              <label for=\"priceValueCol\">Цена из Excel</label><select id=\"priceValueCol\"></select>\n            </div>\n            <pre id=\"pricePreview\" style=\"white-space:pre-wrap;overflow-wrap:anywhere;background:#f7faff;padding:9px;border-radius:8px;font-size:10px\"></pre>\n            <button id=\"priceLoad\" class=\"primary\">Импортировать цены в очередь</button>\n          </div>\n          <div id=\"priceSummary\" class=\"price-summary\">Цены не загружены.</div>\n          <div id=\"priceNow\" class=\"price-now\"></div>\n          <div class=\"price-actions\">\n            <button class=\"primary\" id=\"priceStart\">▶ Начать цены</button>\n            <button id=\"priceOne\">Тест: 1 цена</button>\n            <button id=\"pricePause\">Ⅱ Пауза</button>\n            <button class=\"danger\" id=\"priceStop\">■ Стоп</button>\n            <button id=\"priceReport\">↓ Excel-отчёт</button>\n            <button class=\"danger\" id=\"priceReset\">Сбросить очередь</button>\n          </div>\n          <label class=\"hint\">Пауза между товарами, сек. <input id=\"priceDelay\" type=\"number\" min=\"0.5\" max=\"30\" step=\"0.5\" value=\"0.5\" style=\"width:74px\"></label>\n          <div class=\"price-grid\">\n            <input type=\"search\" id=\"priceSearch\" placeholder=\"Поиск по ссылке, ID, названию\">\n            <select id=\"priceFilter\">\n              <option value=\"all\">Все строки</option>\n              <option value=\"pending\">Ожидают</option>\n              <option value=\"updated\">Изменены</option>\n              <option value=\"unchanged\">Без изменений</option>\n              <option value=\"failed\">Ошибки</option>\n              <option value=\"unconfirmed\">Не подтверждено</option>\n              <option value=\"not_found\">Не найдены</option>\n              <option value=\"skipped\">Пропущены</option>\n            </select>\n          </div>\n          <div class=\"price-table\" id=\"priceRows\"></div>\n          <div class=\"price-pager\"><button id=\"pricePrev\">←</button><span id=\"pricePages\">1 / 1</span><button id=\"priceNext\">→</button></div>\n          <h4>Журнал редактирования цен (последние 60 событий)</h4>\n          <div class=\"price-logs\" id=\"priceLogs\"></div>\n          <p class=\"hint\">Скрипт проверяет ID товара, сравнивает старую цену с новой и не нажимает Update, если цена совпадает. После сохранения сверяет цену на загруженной странице. Если сохранение не подтверждено, повторно Update не нажимает, чтобы избежать дублирования действий.</p>\n        </div>\n      </div>";
     root.innerHTML='<style>'+CSS+'</style>'+
       '<button class="pill hidden" id="pill">Product Manager · открыть</button>'+
       '<section class="panel" id="panel"><header class="head" id="drag">'+
-      '<div class="logo">P</div><div><b>Product Manager</b><small>'+esc(DOMAIN)+' · Trash / Private · v'+VERSION+'</small></div>'+
+      '<div class="logo">P</div><div><b>Product Manager</b><small>'+esc(DOMAIN)+' · Trash / Private / Prices · v'+VERSION+'</small></div>'+
       '<span class="spacer"></span><button class="icon" id="full" title="На весь экран">⛶</button>'+
       '<button class="icon" id="min" title="Свернуть">—</button></header>'+
-      '<div class="body"><div class="stats">'+
+      '<div class="body"><div id="standardControls"><div class="stats">'+
       '<div class="card"><b id="total">0</b><span>Товаров в файле</span></div>'+
       '<div class="card done"><b id="done">0</b><span id="doneLabel">Выполнено</span></div>'+
       '<div class="card bad"><b id="missing">0</b><span>Не найдено</span></div>'+
@@ -1272,14 +1274,15 @@
       '<small>Сначала выберите действие, затем нажмите «Тест: 1 товар» или «Начать». После запуска действие нельзя изменить без новой загрузки очереди.</small></div>'+
       '<div class="actions"><button class="primary" id="start">▶ Начать</button><button id="one">Тест: 1 товар</button>'+
       '<button id="pause">Ⅱ Пауза</button><button class="danger" id="stop">■ Стоп</button>'+
-      '<button id="report">↓ Отчёт Excel</button></div>'+
+      '<button id="report">↓ Отчёт Excel</button></div></div>'+
       '<nav class="tabs">'+
       '<button data-tab="queue" class="on">Очередь</button>'+
       '<button data-tab="not_found">Не найдены</button>'+
       '<button data-tab="failed">Ошибки обработки</button>'+ 
       '<button data-tab="unconfirmed">Не подтверждено</button>'+
       '<button data-tab="log">Журнал</button>'+
-      '<button data-tab="import">Импорт Excel</button>'+
+      '<button data-tab="import">Импорт Excel</button>'+ 
+      '<button data-tab="prices">Редактирование цен</button>'+
       '<button data-tab="help">Как работать</button></nav>'+
       '<div class="view" id="queue"><div class="tools">'+
       '<input type="search" id="search" placeholder="Фильтр очереди: ссылка, ID, название…">'+
@@ -1312,6 +1315,7 @@
       '<h3>Ошибки и результаты</h3><p>Предупреждения WPML о переводе не считаются ошибкой Trash. Успех подтверждается перенаправлением или уведомлением WordPress. Если подтверждения нет — «Не подтверждено», а не ложная «Ошибка удаления». Без дополнительных запросов к корзине.</p>'+
       '<p>При истечении авторизации скрипт останавливает обработку до входа. Повторный Trash/Update после перезагрузки не выполняется.</p>'+
       '<p>Выбранное действие закрепляется за очередью после запуска. Для другого действия создайте новую очередь из Excel.</p></div>'+
+      priceHTML+
       '<footer class="foot"><span id="footer">Очередь сохраняется локально в Tampermonkey</span>'+
       '<button id="prev" title="Предыдущая страница">←</button><span id="pages">1 / 1</span>'+
       '<button id="next" title="Следующая страница">→</button></footer></div></section>';
@@ -1394,6 +1398,7 @@
     drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('over');});
     drop.addEventListener('dragleave',()=>drop.classList.remove('over'));
     drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('over');readExcel(e.dataTransfer.files[0]);});
+    priceMount();
     $('#delay').value=state.settings.delay;
     $('#delay').onchange=e=>{
       if(!canEdit()){e.target.value=state.settings.delay;return;}
@@ -1403,14 +1408,17 @@
     if (GM_getValue(PREFIX+':minimized',false)) {
       panel.classList.add('hidden');$('#pill').classList.remove('hidden');
     }
-    if(!state.rows.length)setTab('import');
+    if(priceState.running||(priceState.paused&&priceState.rows.length&&!state.running))
+      setTab('prices');
+    else if(!state.rows.length)setTab('import');
     else render();
   }
   function setTab(tab) {
     activeTab=tab;page=0;
-    for(const name of ['queue','not_found','failed','unconfirmed','log','import','help'])
+    for(const name of ['queue','not_found','failed','unconfirmed','log','import','prices','help'])
       $('#'+name).classList.toggle('hidden',name!==tab);
-    $$('[data-tab]').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
+    $('[data-tab]').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
+    $('#standardControls').classList.toggle('hidden',tab==='prices');
     render();
   }
   function subset() {
@@ -1480,18 +1488,18 @@
     const activeHere=state.running && state.owner===tabId;
     const recoverable=state.running && state.owner!==tabId && !lockedElsewhere;
     $('#start').textContent=recoverable?'▶ Возобновить':state.paused?'▶ Продолжить':'▶ Начать';
-    $('#start').disabled=activeHere||lockedElsewhere||busy||!hasPending;
-    $('#one').disabled=activeHere||lockedElsewhere||busy||!hasPending;
+    $('#start').disabled=activeHere||lockedElsewhere||busy||priceState.running||priceBusy||!hasPending;
+    $('#one').disabled=activeHere||lockedElsewhere||busy||priceState.running||priceBusy||!hasPending;
     $('#operation').value=state.action||'';
-    $('#operation').disabled=activeHere||lockedElsewhere||busy||!!state.started;
+    $('#operation').disabled=activeHere||lockedElsewhere||busy||priceState.running||!!state.started;
     if(!['trash','private'].includes(state.action)){
       $('#start').disabled=true;$('#one').disabled=true;
     }
     $('#pause').disabled=!activeHere;
     $('#stop').disabled=!activeHere;
     $('#report').disabled=!state.rows.length;
-    $('#load').disabled=state.running||busy||!book||excelColumn<0;
-    $('#reset').disabled=state.running||busy;
+    $('#load').disabled=state.running||priceState.running||busy||!book||excelColumn<0;
+    $('#reset').disabled=state.running||priceState.running||busy;
     $('#footer').textContent=state.updated?'Сохранено · '+new Date(state.updated).toLocaleTimeString('ru-RU'):
       'Очередь сохраняется автоматически';
     $$('[data-tab]').forEach(b=>{
@@ -1502,12 +1510,18 @@
     });
     if(['queue','not_found','failed','unconfirmed'].includes(activeTab))renderRows();
     if(activeTab==='log')renderLogs();
+    if(activeTab==='prices')renderPrices();
     $('.foot #prev').classList.toggle('hidden',!['queue','not_found','failed','unconfirmed'].includes(activeTab));
     $('.foot #next').classList.toggle('hidden',!['queue','not_found','failed','unconfirmed'].includes(activeTab));
     $('.foot #pages').classList.toggle('hidden',!['queue','not_found','failed','unconfirmed'].includes(activeTab));
   }
   // Do not resume unattended after a WordPress login redirect.
   if(location.pathname.endsWith('/wp-login.php')) {
+    if(priceState.running){
+      priceState.running=false;priceState.paused=true;
+      priceLog('error','Сессия WordPress закончилась. Войдите снова и продолжите очередь цен.');
+      priceRelease();
+    }
     if(state.running) {
       state.running=false;state.paused=true;
       log('error','Сессия WordPress закончилась. Войдите снова и нажмите «Продолжить» вручную.');
@@ -1516,6 +1530,14 @@
     return;
   }
   mount();
+  if(priceState.running && priceState.owner===tabId){
+    if(priceClaim()){
+      priceLog('info','Возобновление очереди цен после загрузки страницы.',priceCurrent());
+      priceSchedule(200);
+    }else{
+      priceState.running=false;priceState.paused=true;pricePersist();
+    }
+  }
   if(state.running && state.owner === tabId) {
     if(claim()) {
       log('info','Возобновление после перехода или перезагрузки вкладки.');
