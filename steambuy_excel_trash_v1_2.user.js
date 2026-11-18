@@ -2,7 +2,7 @@
 // @name         Product Manager — Trash / Private / Prices
 // @namespace    https://steambuy.pro/
 // @version      2.5.0
-// @description  Excel product_link → Trash / Private / Regular price (€). Независимые очереди, журнал, отчёты; 7 сайтов.
+// @description  Единая Excel-очередь: Trash, Private или Regular price (€). 4 вкладки, фильтры и журнал; 7 сайтов.
 // @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
 // @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
 // @downloadURL  https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
@@ -934,6 +934,7 @@
     '.foot{padding:10px 16px;border-top:1px solid #e4eaf2;display:flex;align-items:center;gap:8px;background:#fafbfd;font-size:11px;color:#7a889a}.foot span:first-child{flex:1}.foot button{padding:4px 8px;font-size:11px}.empty{text-align:center;padding:28px 16px;color:#77869b}.empty b{display:block;color:#31435c;font-size:16px;margin-bottom:6px}.drop{border:2px dashed #c4d2e9;border-radius:12px;text-align:center;padding:20px;margin:4px 0 12px;background:#f7faff}.drop.over{border-color:#3468df;background:#eaf1ff}.drop label{cursor:pointer;color:#2b63d4;font-weight:700}.drop small{display:block;margin-top:5px;color:#7b8a9e}.mapping{display:grid;grid-template-columns:120px 1fr;gap:8px;align-items:center}.mapping label{color:#61728a}.hint{font-size:12px;color:#6d7e94;margin:10px 0}.logline{display:grid;grid-template-columns:80px 80px 1fr;gap:8px;padding:8px 0;border-bottom:1px solid #edf1f6;font-size:11px;overflow-wrap:anywhere}.logline.error{color:#a83f2f}.logline.ok{color:#147c55}.logline.warn{color:#955e0d}',
     '.pill{position:fixed;right:22px;bottom:20px;border-radius:14px;background:#14263e;color:#fff;padding:12px 18px;box-shadow:0 8px 30px #0f233b40;pointer-events:auto}.pill:hover{background:#24466b;color:white}.notice{position:absolute;bottom:54px;left:16px;right:16px;z-index:8;padding:12px;background:#fff7e7;border:1px solid #e3cdab;border-radius:10px;color:#75551f;box-shadow:0 6px 20px #0002}.notice button{float:right;padding:0 6px;margin-right:5px}.help h3{font-size:13px;color:#263d5c}.help p,.help li{font-size:12px;color:#61728a}.help ol{padding-left:20px}.setting{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #edf1f6}.setting input[type=number]{width:80px}.setting small{display:block;color:#7a899c}',
     '.price-section{display:flex;flex-direction:column;gap:10px}.price-section h3{font-size:15px;margin:4px 0 0;color:#223a58}.price-section h4{font-size:12px;margin:8px 0 0;color:#34465d}.price-section p{margin:0}.price-summary{padding:10px;background:#f5f8fd;border:1px solid #e3eaf5;border-radius:9px;font-size:12px;line-height:1.7}.price-now{font-size:12px;color:#405977}.price-actions{display:flex;gap:6px;flex-wrap:wrap}.price-mapping{display:grid;grid-template-columns:120px 1fr;gap:8px;align-items:center}.price-mapping label{font-size:11px;font-weight:650}.price-mapping select{width:100%}.price-table{min-height:100px;max-height:250px;overflow:auto}.price-logs{max-height:185px;overflow:auto;border:1px solid #e5ebf2;border-radius:9px;padding:6px 10px}.price-pager{display:flex;align-items:center;gap:8px}.price-pager span{margin:0 8px;font-size:12px;color:#526480}.price-grid{display:grid;grid-template-columns:minmax(0,1fr) 160px;gap:10px}',
+    '.logfilters{display:grid;grid-template-columns:minmax(0,1fr) 160px 120px;gap:8px}.logsummary{justify-content:space-between;align-items:center;color:#64758c;font-size:11px}.loglist{display:grid;gap:5px}.logline{grid-template-columns:90px 85px 1fr!important;gap:8px;background:#f9fbff;border:1px solid #e5ebf4;border-radius:9px;padding:10px 12px!important;color:#324960;font-size:12px!important}.logline>span:last-child{line-height:1.55;overflow-wrap:anywhere;white-space:pre-wrap}.logline time{color:#657a95;font-variant-numeric:tabular-nums}.logline.warn{border-left:3px solid #c8942a}.logline.error{border-left:3px solid #b55346}.logline.ok{border-left:3px solid #4c9a73}@media(max-width:550px){.logfilters{grid-template-columns:1fr 1fr}.logfilters input{grid-column:1/-1}.logline{grid-template-columns:70px 60px 1fr!important;padding:8px!important}}',
     '@media(max-width:550px){.panel{right:8px;bottom:8px;max-width:calc(100vw - 16px)}.stats{gap:4px}.card{padding:7px}.tabs{gap:12px}.actions button{font-size:11px;padding:7px}}'
   ].join('');
   function mount() {
@@ -942,14 +943,13 @@
     host.style.cssText='position:fixed;z-index:2147483646;inset:0;pointer-events:none';
     document.documentElement.append(host);
     root=host.attachShadow({mode:'open'});
-    const priceHTML="\n      <div class=\"view hidden\" id=\"prices\">\n        <div class=\"price-section\">\n          <h3>Редактирование Regular price (€)</h3>\n          <p class=\"hint\">Excel/CSV: столбцы <b>product_link</b> и <b>price</b> (или «цена», «regular_price»). Пример: <b>€18,60</b> → <b>18,60</b>. Файлы цен и удаления обрабатываются отдельными очередями.</p>\n          <input id=\"priceFile\" type=\"file\" accept=\".xlsx,.xls,.csv\">\n          <small id=\"priceFileName\">Файл не выбран</small>\n          <div class=\"hidden\" id=\"priceMapping\">\n            <div class=\"price-mapping\">\n              <label for=\"priceSheet\">Лист Excel</label><select id=\"priceSheet\"></select>\n              <label for=\"priceLinkCol\">product_link</label><select id=\"priceLinkCol\"></select>\n              <label for=\"priceValueCol\">Цена из Excel</label><select id=\"priceValueCol\"></select>\n            </div>\n            <pre id=\"pricePreview\" style=\"white-space:pre-wrap;overflow-wrap:anywhere;background:#f7faff;padding:9px;border-radius:8px;font-size:10px\"></pre>\n            <button id=\"priceLoad\" class=\"primary\">Импортировать цены в очередь</button>\n          </div>\n          <div id=\"priceSummary\" class=\"price-summary\">Цены не загружены.</div>\n          <div id=\"priceNow\" class=\"price-now\"></div>\n          <div class=\"price-actions\">\n            <button class=\"primary\" id=\"priceStart\">▶ Начать цены</button>\n            <button id=\"priceOne\">Тест: 1 цена</button>\n            <button id=\"pricePause\">Ⅱ Пауза</button>\n            <button class=\"danger\" id=\"priceStop\">■ Стоп</button>\n            <button id=\"priceReport\">↓ Excel-отчёт</button>\n            <button class=\"danger\" id=\"priceReset\">Сбросить очередь</button>\n          </div>\n          <label class=\"hint\">Пауза между товарами, сек. <input id=\"priceDelay\" type=\"number\" min=\"0.5\" max=\"30\" step=\"0.5\" value=\"0.5\" style=\"width:74px\"></label>\n          <div class=\"price-grid\">\n            <input type=\"search\" id=\"priceSearch\" placeholder=\"Поиск по ссылке, ID, названию\">\n            <select id=\"priceFilter\">\n              <option value=\"all\">Все строки</option>\n              <option value=\"pending\">Ожидают</option>\n              <option value=\"updated\">Изменены</option>\n              <option value=\"unchanged\">Без изменений</option>\n              <option value=\"failed\">Ошибки</option>\n              <option value=\"unconfirmed\">Не подтверждено</option>\n              <option value=\"not_found\">Не найдены</option>\n              <option value=\"skipped\">Пропущены</option>\n            </select>\n          </div>\n          <div class=\"price-table\" id=\"priceRows\"></div>\n          <div class=\"price-pager\"><button id=\"pricePrev\">←</button><span id=\"pricePages\">1 / 1</span><button id=\"priceNext\">→</button></div>\n          <h4>Журнал редактирования цен (последние 60 событий)</h4>\n          <div class=\"price-logs\" id=\"priceLogs\"></div>\n          <p class=\"hint\">Скрипт проверяет ID товара, сравнивает старую цену с новой и не нажимает Update, если цена совпадает. После сохранения сверяет цену на загруженной странице. Если сохранение не подтверждено, повторно Update не нажимает, чтобы избежать дублирования действий.</p>\n        </div>\n      </div>";
     root.innerHTML='<style>'+CSS+'</style>'+
       '<button class="pill hidden" id="pill">Product Manager · открыть</button>'+
       '<section class="panel" id="panel"><header class="head" id="drag">'+
-      '<div class="logo">P</div><div><b>Product Manager</b><small>'+esc(DOMAIN)+' · Trash / Private / Prices · v'+VERSION+'</small></div>'+
+      '<div class="logo">P</div><div><b>Product Manager</b><small>'+esc(DOMAIN)+' · Trash / Private / Price · v'+VERSION+'</small></div>'+
       '<span class="spacer"></span><button class="icon" id="full" title="На весь экран">⛶</button>'+
       '<button class="icon" id="min" title="Свернуть">—</button></header>'+
-      '<div class="body"><div id="standardControls"><div class="stats">'+
+      '<div class="body"><div class="stats">'+
       '<div class="card"><b id="total">0</b><span>Товаров в файле</span></div>'+
       '<div class="card done"><b id="done">0</b><span id="doneLabel">Выполнено</span></div>'+
       '<div class="card bad"><b id="missing">0</b><span>Не найдено</span></div>'+
@@ -960,34 +960,49 @@
       '<div class="operation"><label for="operation">Действие с товарами</label>'+
       '<select id="operation"><option value="">Выберите действие...</option>'+
       '<option value="trash">Удалить товар (Move to Trash)</option>'+
-      '<option value="private">Сделать товар приватным (Private + Update)</option></select>'+
+      '<option value="private">Сделать товар приватным (Private + Update)</option>'+ 
+      '<option value="price">Редактировать цену (Regular price + Update)</option></select>'+
       '<small>Сначала выберите действие, затем нажмите «Тест: 1 товар» или «Начать». После запуска действие нельзя изменить без новой загрузки очереди.</small></div>'+
       '<div class="actions"><button class="primary" id="start">▶ Начать</button><button id="one">Тест: 1 товар</button>'+
       '<button id="pause">Ⅱ Пауза</button><button class="danger" id="stop">■ Стоп</button>'+
-      '<button id="report">↓ Отчёт Excel</button></div></div>'+
+      '<button id="report">↓ Отчёт Excel</button></div>'+
       '<nav class="tabs">'+
       '<button data-tab="queue" class="on">Очередь</button>'+
-      '<button data-tab="not_found">Не найдены</button>'+
-      '<button data-tab="failed">Ошибки обработки</button>'+ 
-      '<button data-tab="unconfirmed">Не подтверждено</button>'+
+      
+      
+      
       '<button data-tab="log">Журнал</button>'+
-      '<button data-tab="import">Импорт Excel</button>'+ 
-      '<button data-tab="prices">Редактирование цен</button>'+
+      '<button data-tab="import">Импорт</button>'+ 
+      
       '<button data-tab="help">Как работать</button></nav>'+
       '<div class="view" id="queue"><div class="tools">'+
       '<input type="search" id="search" placeholder="Фильтр очереди: ссылка, ID, название…">'+
-      '<select id="filter"><option value="all">Все статусы</option><option value="pending">В очереди</option>'+
-      '<option value="done">Выполнены</option><option value="skipped">Пропущено</option></select></div><div id="rows"></div></div>'+
-      '<div class="view hidden" id="not_found"><div id="missingRows"></div></div>'+
-      '<div class="view hidden" id="failed"><div id="failedRows"></div></div>'+
-      '<div class="view hidden" id="unconfirmed"><div id="unconfirmedRows"></div></div>'+
-      '<div class="view hidden" id="log"><div class="tools"><button id="downloadLog">↓ Скачать журнал TXT</button><span class="hint">Последние 1500 событий</span></div><div id="logs"></div></div>'+
+      '<select id="filter"><option value="all">Все статусы</option><option value="pending">Ожидают</option>'+
+      '<option value="done">Выполнены</option><option value="unchanged">Цена без изменений</option>'+
+      '<option value="not_found">Не найдены</option><option value="failed">Ошибки обработки</option>'+
+      '<option value="unconfirmed">Не подтверждено</option><option value="skipped">Пропущено</option>'+
+      '</select></div><div id="rows"></div></div>'+
+      
+      
+      
+      '<div class="view hidden" id="log"><div class="tools logfilters">'+
+      '<input id="logSearch" type="search" placeholder="Поиск: ID, товар или текст ошибки">'+
+      '<select id="logLevel"><option value="all">Все события</option>'+
+      '<option value="error">Ошибки</option><option value="warn">Предупреждения</option>'+
+      '<option value="ok">Успешно</option><option value="info">Действия</option></select>'+
+      '<select id="logLimit"><option value="50">50 событий</option>'+
+      '<option value="100" selected>100 событий</option><option value="200">200 событий</option></select>'+
+      '</div><div class="tools logsummary"><span id="logFound">Журнал пуст</span>'+
+      '<button id="downloadLog">↓ Скачать весь журнал TXT</button></div>'+
+      '<div id="logs" class="loglist"></div></div>'+
       '<div class="view hidden" id="import"><div class="tools"><button class="danger" id="reset">Сбросить очередь и журнал</button></div>'+
       '<div class="drop" id="drop"><label for="file">Выбрать Excel / CSV</label><input type="file" id="file" accept=".xlsx,.xls,.csv" hidden>'+
       '<small>Или перетащите файл сюда</small><small id="filename">Файл не выбран</small></div>'+
       '<div class="hidden" id="mapping"><div class="mapping"><label for="sheet">Лист Excel</label><select id="sheet"></select>'+ 
-      '<label>Столбец</label><strong id="linkColumn">—</strong></div>'+
-      '<p class="hint">Обязательный столбец: product_link. В нём укажите ссылки вида https://'+esc(DOMAIN)+'/wp-admin/post.php?post=3287&amp;action=edit. Другие столбцы не нужны. ID автоматически извлекается из ссылки.</p>'+
+      '<label>Столбец URL</label><strong id="linkColumn">—</strong>'+
+      '<label id="priceColumnWrap" class="hidden" for="priceColumn">Столбец цены</label>'+
+      '<select class="hidden" id="priceColumn"><option value="">Выберите столбец цены...</option></select></div>'+
+      '<p class="hint">Excel: product_link обязателен для всех действий. Для изменения цены дополнительно нужен столбец price, regular_price или «цена». Пример: €18,60 → 18,60. Столбец можно выбрать вручную.</p>'+
       '<pre id="preview" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#f6f8fc;padding:10px;border-radius:9px"></pre>'+
       '<button class="primary" id="load">Загрузить в очередь</button></div>'+
       '<p class="hint">Сначала выберите действие над товарами в верхней панели. При ошибке отдельного товара скрипт фиксирует причину в журнале и продолжает работу. Очереди сайтов независимы.</p>'+
@@ -996,16 +1011,16 @@
       '<p class="hint">Отсутствующая ссылка или ошибка сохранения не останавливают очередь. Если сессия WordPress истекла, скрипт ставится на паузу до повторного входа.</p></div>'+
       '<div class="view help hidden" id="help">'+
       '<h3>Выбор действия и импорт</h3><ol>'+
-      '<li>Подготовьте Excel с одним столбцом product_link, содержащим ссылки редактора товара на этом сайте.</li>'+
-      '<li>Загрузите Excel. Вверху панели выберите «Удалить товар (Move to Trash)» или «Сделать приватным».</li>'+
+      '<li>Подготовьте Excel со столбцом product_link. Для изменения цены добавьте price либо «цена».</li>'+
+      '<li>В списке «Действие с товарами» выберите Trash, Private либо «Редактировать цену». Затем импортируйте Excel.</li>'+
       '<li>Нажмите «Тест: 1 товар» для пробного применения выбранного действия к одному товару.</li>'+
       '<li>После теста нажмите «Начать» для обработки остальных ссылок.</li>'+
       '</ol><h3>Режим: Удалить товар</h3><p>Открывается product_link → Move to Trash → перенаправление WordPress → запись результата → следующая ссылка. Без дополнительных запросов к карточке и страницам корзины.</p>'+
       '<h3>Режим: Сделать приватным</h3><p>Открывается product_link → Edit visibility → Private → OK → Update → проверка выбранного Visibility на заново загруженной странице. Обычно без дополнительных запросов. Если обновления страницы не было — одна проверка через сервер. Повторно Update не нажимается.</p>'+
-      '<h3>Ошибки и результаты</h3><p>Предупреждения WPML о переводе не считаются ошибкой Trash. Успех подтверждается перенаправлением или уведомлением WordPress. Если подтверждения нет — «Не подтверждено», а не ложная «Ошибка удаления». Без дополнительных запросов к корзине.</p>'+
+      '<h3>Редактирование цены</h3><p>Открывается product_link → проверяется ID → Regular price → Update → сверка сохранённой цены. Если цена уже совпадает, сохранение пропускается. Повторный Update автоматически не выполняется.</p>'+
+      '<h3>Очередь и журнал</h3><p>Все результаты, включая «Не найдены», «Ошибки обработки» и «Не подтверждено», выбираются выпадающим фильтром во вкладке «Очередь». Во вкладке «Журнал» можно искать по ID и фильтровать сообщения по типу. Весь журнал доступен в TXT, результаты — в Excel.</p>'+
       '<p>При истечении авторизации скрипт останавливает обработку до входа. Повторный Trash/Update после перезагрузки не выполняется.</p>'+
       '<p>Выбранное действие закрепляется за очередью после запуска. Для другого действия создайте новую очередь из Excel.</p></div>'+
-      priceHTML+
       '<footer class="foot"><span id="footer">Очередь сохраняется локально в Tampermonkey</span>'+
       '<button id="prev" title="Предыдущая страница">←</button><span id="pages">1 / 1</span>'+
       '<button id="next" title="Следующая страница">→</button></footer></div></section>';
@@ -1065,9 +1080,10 @@
         toast('Для смены действия создайте новую очередь. Во время выполнения менять действие запрещено.');
         return;
       }
-      if(!['','trash','private'].includes(e.target.value))return;
+      if(!['','trash','private','price'].includes(e.target.value))return;
       state.action=e.target.value;
       log('info','Оператор выбрал действие: '+actionName(state.action)+'.');
+      fillMapping();
     };
     $('#start').onclick=()=>start(false);
     $('#one').onclick=()=>start(true);
@@ -1082,13 +1098,19 @@
     $('#filter').onchange=e=>{filter=e.target.value;page=0;renderRows();};
     $('#file').onchange=e=>readExcel(e.target.files?.[0]);
     $('#sheet').onchange=fillMapping;
+    $('#priceColumn').onchange=e=>{
+      priceColumn=e.target.value===''?-1:Number(e.target.value);
+      fillMapping();
+    };
+    $('#logSearch').oninput=e=>{logSearch=e.target.value;renderLogs();};
+    $('#logLevel').onchange=e=>{logLevel=e.target.value;renderLogs();};
+    $('#logLimit').onchange=e=>{logLimit=Number(e.target.value)||100;renderLogs();};
     
     $('#load').onclick=importQueue;
     const drop=$('#drop');
     drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('over');});
     drop.addEventListener('dragleave',()=>drop.classList.remove('over'));
     drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('over');readExcel(e.dataTransfer.files[0]);});
-    priceMount();
     $('#delay').value=state.settings.delay;
     $('#delay').onchange=e=>{
       if(!canEdit()){e.target.value=state.settings.delay;return;}
@@ -1098,17 +1120,14 @@
     if (GM_getValue(PREFIX+':minimized',false)) {
       panel.classList.add('hidden');$('#pill').classList.remove('hidden');
     }
-    if(priceState.running||(priceState.paused&&priceState.rows.length&&!state.running))
-      setTab('prices');
-    else if(!state.rows.length)setTab('import');
+    if(!state.rows.length)setTab('import');
     else render();
   }
   function setTab(tab) {
     activeTab=tab;page=0;
-    for(const name of ['queue','not_found','failed','unconfirmed','log','import','prices','help'])
+    for(const name of ['queue','log','import','help'])
       $('#'+name).classList.toggle('hidden',name!==tab);
     $('[data-tab]').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
-    $('#standardControls').classList.toggle('hidden',tab==='prices');
     render();
   }
   function subset() {
@@ -1155,11 +1174,11 @@
     const counts=Object.create(null);
     for(const r of state.rows)counts[r.status]=(counts[r.status]||0)+1;
     const count=s=>counts[s]||0;
-    const done=count('done'),missing=count('not_found'),error=count('failed'),unconfirmed=count('unconfirmed');
+    const done=count('done')+count('unchanged'),missing=count('not_found'),error=count('failed'),unconfirmed=count('unconfirmed');
     const pending=count('pending')+count('opening')+count('deleting')+count('saving')+count('verifying');
     $('#total').textContent=state.rows.length;
     $('#done').textContent=done;
-    $('#doneLabel').textContent=state.action==='private'?'Приватных':'Выполнено';
+    $('#doneLabel').textContent=state.action==='private'?'Приватных':state.action==='price'?'Цены обработаны':'Выполнено';
     $('#missing').textContent=missing;
     $('#errors').textContent=error;
     $('#unconfirmed').textContent=unconfirmed;
@@ -1178,18 +1197,18 @@
     const activeHere=state.running && state.owner===tabId;
     const recoverable=state.running && state.owner!==tabId && !lockedElsewhere;
     $('#start').textContent=recoverable?'▶ Возобновить':state.paused?'▶ Продолжить':'▶ Начать';
-    $('#start').disabled=activeHere||lockedElsewhere||busy||priceState.running||priceBusy||!hasPending;
-    $('#one').disabled=activeHere||lockedElsewhere||busy||priceState.running||priceBusy||!hasPending;
+    $('#start').disabled=activeHere||lockedElsewhere||busy||!hasPending;
+    $('#one').disabled=activeHere||lockedElsewhere||busy||!hasPending;
     $('#operation').value=state.action||'';
-    $('#operation').disabled=activeHere||lockedElsewhere||busy||priceState.running||!!state.started;
-    if(!['trash','private'].includes(state.action)){
+    $('#operation').disabled=activeHere||lockedElsewhere||busy||!!state.started;
+    if(!['trash','private','price'].includes(state.action)){
       $('#start').disabled=true;$('#one').disabled=true;
     }
     $('#pause').disabled=!activeHere;
     $('#stop').disabled=!activeHere;
     $('#report').disabled=!state.rows.length;
-    $('#load').disabled=state.running||priceState.running||busy||!book||excelColumn<0;
-    $('#reset').disabled=state.running||priceState.running||busy;
+    $('#load').disabled=state.running||busy||!book||excelColumn<0||(state.action==='price'&&priceColumn<0);
+    $('#reset').disabled=state.running||busy;
     $('#footer').textContent=state.updated?'Сохранено · '+new Date(state.updated).toLocaleTimeString('ru-RU'):
       'Очередь сохраняется автоматически';
     $$('[data-tab]').forEach(b=>{
