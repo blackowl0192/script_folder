@@ -757,6 +757,7 @@
   }
   function fillMapping() {
     $('#priceColumnWrap').classList.toggle('hidden',state.action!=='price');
+    $('#priceColumn').classList.toggle('hidden',state.action!=='price');
     if(!book){
       excelColumn=-1;priceColumn=-1;
       $('#load').disabled=true;
@@ -1131,26 +1132,25 @@
     render();
   }
   function subset() {
-    if (activeTab==='not_found') return state.rows.filter(x=>x.status==='not_found');
-    if (activeTab==='failed') return state.rows.filter(x=>x.status==='failed');
-    if (activeTab==='unconfirmed') return state.rows.filter(x=>x.status==='unconfirmed');
-    return state.rows.filter(x=>{
-      const matches=filter==='all'||(filter==='pending' ? ['pending','opening','deleting','saving','verifying'].includes(x.status) : x.status===filter);
-      return matches && normalized(x.id+' '+x.productLink+' '+x.foundName).includes(normalized(search));
+    return state.rows.filter(r=>{
+      const matches=filter==='all'||(filter==='pending'?
+        ['pending','opening','deleting','saving','verifying'].includes(r.status) : r.status===filter);
+      return matches && normalized(r.id+' '+r.productLink+' '+r.foundName+
+        ' '+r.price+' '+r.before+' '+r.after).includes(normalized(search));
     });
   }
   function renderRows() {
     if(!root)return;
-    if(!['queue','not_found','failed','unconfirmed'].includes(activeTab))return;
+    if(activeTab!=='queue')return;
     const rows=subset();
     const pages=Math.max(1,Math.ceil(rows.length/PAGESIZE));
     page=Math.min(page,pages-1);
     $('#pages').textContent=(page+1)+' / '+pages;
     $('#prev').disabled=page===0;$('#next').disabled=page>=pages-1;
-    const target=activeTab==='queue' ? $('#rows') : activeTab==='not_found' ? $('#missingRows') : activeTab==='unconfirmed' ? $('#unconfirmedRows') : $('#failedRows');
+    const target=$('#rows');
     if(!rows.length){
       target.innerHTML='<div class="empty"><b>Список пуст</b>'+
-        (activeTab==='queue'?'Импортируйте Excel или измените фильтр.':'Здесь пока нет записей.')+'</div>';
+        'Импортируйте Excel или измените фильтр.</div>';
       return;
     }
     target.innerHTML='<table><thead><tr><th style="width:50px">Строка</th><th>Игра / ID</th>'+
@@ -1158,16 +1158,26 @@
       rows.slice(page*PAGESIZE,page*PAGESIZE+PAGESIZE).map(r=>
         '<tr class="'+(current()===r?'currentrow':'')+'"><td>'+r.excelRow+'</td>'+
         '<td><span class="title" title="'+esc(r.foundName||r.productLink||'—')+'">'+esc(r.foundName||('Товар ID '+(r.id||'—')))+
-        '</span><small>'+esc(r.productLink||'')+'</small><small>'+esc(r.message||'')+'</small></td>'+
+        '</span><small>'+esc(r.productLink||'')+'</small>'+
+        (r.action==='price'?'<small>Цена: '+esc(r.price||r.rawPrice||'—')+
+          ' · До: '+esc(r.before||'—')+' · После: '+esc(r.after||'—')+'</small>':'')+
+        '<small>'+esc(r.message||'')+'</small></td>'+
         '<td><span class="badge '+(statuses[r.status]||'neutral')+'">'+esc(rowLabel(r))+
         '</span></td></tr>'
       ).join('')+'</tbody></table>';
   }
   function renderLogs() {
-    $('#logs').innerHTML=state.logs.slice().reverse().map(x=>
+    const query=normalized(logSearch);
+    const found=state.logs.filter(x=>(logLevel==='all'||x.level===logLevel) &&
+      normalized(x.id+' '+x.row+' '+x.message).includes(query));
+    const latest=found.slice(-logLimit).reverse();
+    $('#logFound').textContent='Найдено: '+found.length+' из '+state.logs.length+
+      ' · показано '+latest.length;
+    $('#logs').innerHTML=latest.map(x=>
       '<div class="logline '+esc(x.level)+'"><time>'+esc(new Date(x.time).toLocaleTimeString('ru-RU'))+
-      '</time><span>'+esc(x.id?'ID '+x.id:'Система')+'</span><span>'+esc(x.message)+'</span></div>'
-    ).join('')||'<div class="empty">Журнал пока пуст</div>';
+      '</time><span>'+esc(x.id?'ID '+x.id:'Система')+'</span>'+
+      '<span>'+esc(x.message)+'</span></div>'
+    ).join('')||'<div class="empty">Нет сообщений по выбранному фильтру.</div>';
   }
   function render() {
     if(!root)return;
@@ -1209,20 +1219,24 @@
     $('#report').disabled=!state.rows.length;
     $('#load').disabled=state.running||busy||!book||excelColumn<0||(state.action==='price'&&priceColumn<0);
     $('#reset').disabled=state.running||busy;
+    $('#priceColumn').disabled=state.running||busy||!book;
     $('#footer').textContent=state.updated?'Сохранено · '+new Date(state.updated).toLocaleTimeString('ru-RU'):
       'Очередь сохраняется автоматически';
-    $$('[data-tab]').forEach(b=>{
-      const n=b.dataset.tab;
-      if(n==='not_found')b.textContent='Не найдены ('+missing+')';
-      if(n==='failed')b.textContent='Ошибки обработки ('+error+')';
-      if(n==='unconfirmed')b.textContent='Не подтверждено ('+unconfirmed+')';
+    const labelsForFilter={
+      all:'Все статусы ('+state.rows.length+')',
+      pending:'Ожидают ('+pending+')',done:'Выполнены ('+count('done')+')',
+      unchanged:'Цена без изменений ('+count('unchanged')+')',
+      not_found:'Не найдены ('+missing+')',failed:'Ошибки обработки ('+error+')',
+      unconfirmed:'Не подтверждено ('+unconfirmed+')',skipped:'Пропущено ('+count('skipped')+')'
+    };
+    $('#filter option').forEach(opt=>{
+      if(labelsForFilter[opt.value])opt.textContent=labelsForFilter[opt.value];
     });
-    if(['queue','not_found','failed','unconfirmed'].includes(activeTab))renderRows();
+    if(activeTab==='queue')renderRows();
     if(activeTab==='log')renderLogs();
-    if(activeTab==='prices')renderPrices();
-    $('.foot #prev').classList.toggle('hidden',!['queue','not_found','failed','unconfirmed'].includes(activeTab));
-    $('.foot #next').classList.toggle('hidden',!['queue','not_found','failed','unconfirmed'].includes(activeTab));
-    $('.foot #pages').classList.toggle('hidden',!['queue','not_found','failed','unconfirmed'].includes(activeTab));
+    $('.foot #prev').classList.toggle('hidden',activeTab!=='queue');
+    $('.foot #next').classList.toggle('hidden',activeTab!=='queue');
+    $('.foot #pages').classList.toggle('hidden',activeTab!=='queue');
   }
   // Do not resume unattended after a WordPress login redirect.
   if(location.pathname.endsWith('/wp-login.php')) {
