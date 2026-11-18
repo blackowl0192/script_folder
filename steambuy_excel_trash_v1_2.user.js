@@ -741,6 +741,57 @@
     setTab('import');
     toast('Очередь и журнал очищены.');
   }
+  // Preserve queues imported through the former standalone Prices tab (v2.4).
+  function migrateLegacyPrices(){
+    if(!canEdit())return;
+    const lease=GM_getValue(PRICE_LEASE,null);
+    if(lease&&lease.until>Date.now())
+      return toast('Старая очередь цен ещё запущена в другой вкладке. Остановите её перед переносом.');
+    const old=GM_getValue(PRICE_KEY,null);
+    if(!old||!Array.isArray(old.rows)||!old.rows.length)
+      return toast('Сохранённая очередь цен версии 2.4 не найдена.');
+    if(!confirm('Перенести '+old.rows.length+' записей из старой очереди цен?\n'+
+      'Текущая очередь Product Manager будет заменена, журнал сохранится в Excel перед переносом только при ручном экспорте.'))
+      return;
+    const delay=Number(old.delay)||0.5;
+    const rows=old.rows.map(r=>{
+      const item={...r,action:'price'};
+      if(item.status==='updated')item.status='done';
+      if(!TERMINAL.has(item.status)&&item.status!=='saving'&&item.status!=='verifying')
+        item.status='pending';
+      return item;
+    });
+    const previous=state;
+    const migrated=defaults();
+    migrated.action='price';migrated.rows=rows;
+    migrated.filename=old.filename||'prices-v2.4';
+    migrated.sheet=old.sheet||'';
+    migrated.logs=(old.logs||[]).slice(-MAX_LOGS);
+    migrated.settings.delay=Math.min(30,Math.max(0.5,delay));
+    migrated.running=false;migrated.paused=true;
+    migrated.mode='batch';migrated.owner='';migrated.started=now();
+    const idx=Number.isInteger(old.index)?old.index:-1;
+    if(idx>=0&&idx<rows.length&&!TERMINAL.has(rows[idx].status)){
+      migrated.index=idx;
+      if(old.phase==='verify-price'&&old.pending?.id===rows[idx].id){
+        migrated.phase='verify-price';migrated.pending={...old.pending,action:'price'};
+      }else if(['saving','verifying'].includes(rows[idx].status)){
+        rows[idx].status='unconfirmed';
+        rows[idx].message='Перенос старой очереди: сохранение могло завершиться. Не повторяем Update без проверки.';
+        migrated.index=-1;
+      }else{
+        migrated.phase='open';
+      }
+    }
+    if(previous.rows.length)
+      migrated.logs.push({time:now(),level:'warn',id:'',row:'',
+        message:'Ветка очереди Product Manager была заменена при подтверждённом переносе старых цен.'});
+    state=migrated;
+    old.running=false;old.paused=true;
+    GM_setValue(PRICE_KEY,old);
+    log('info','Старая очередь цен перенесена в общий режим действий: '+rows.length+' строк. Операция поставлена на паузу.');
+    setTab('queue');
+  }
   function sheetRows() {
     const name = book?.SheetNames[Number($('#sheet').value)];
     return name ? XLSX.utils.sheet_to_json(book.Sheets[name],
@@ -928,7 +979,7 @@
     '.panel{position:fixed;right:22px;bottom:20px;width:710px;height:650px;max-width:calc(100vw - 24px);max-height:calc(100vh - 40px);background:white;box-shadow:0 18px 70px #0f233b40;border:1px solid #dae2ee;border-radius:16px;display:flex;flex-direction:column;overflow:hidden;resize:both;pointer-events:auto}',
     '.panel.full{inset:24px!important;width:auto!important;height:auto!important;max-width:none;max-height:none;resize:none}',
     '.head{background:#14263e;color:white;padding:16px 18px;display:flex;align-items:center;gap:12px;cursor:move;touch-action:none;user-select:none}.logo{height:36px;width:36px;background:#4275ed;display:grid;place-items:center;border-radius:10px;font-size:18px;font-weight:800}.head b{font-size:16px;letter-spacing:.2px}.head small{color:#b1c2d9;display:block;font-size:11px}.head .spacer{flex:1}.icon{background:#ffffff13;color:#fff;border-color:#ffffff22;padding:4px 9px}',
-    '.body{display:flex;flex-direction:column;min-height:0;flex:1}.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:14px 16px 10px}.card{border:1px solid #e4eaf2;border-radius:10px;padding:9px 12px;background:#fafbfd}.card b{display:block;font-size:21px;line-height:1.25}.card span{font-size:11px;color:#68778c}.card.done b{color:#16835e}.card.bad b{color:#bd4f39}',
+    '.body{display:flex;flex-direction:column;min-height:0;flex:1}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:14px 16px 10px}.card{border:1px solid #e4eaf2;border-radius:10px;padding:9px 12px;background:#fafbfd}.card b{display:block;font-size:21px;line-height:1.25}.card span{font-size:11px;color:#68778c}.card.done b{color:#16835e}.card.bad b{color:#bd4f39}',
     '.progress{height:5px;background:#eaf0f8;margin:0 16px;border-radius:5px;overflow:hidden}.progress i{height:100%;display:block;background:#4076ed;transition:width .3s}.current{padding:10px 16px;display:flex;gap:8px;align-items:center;color:#586b83;min-height:42px}.dot{height:8px;width:8px;background:#93a1b3;border-radius:50%;flex:none}.dot.run{background:#3974ee;box-shadow:0 0 0 4px #e5edff}.current span:last-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
     '.operation{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 16px 12px;padding:11px 12px;background:#f4f7fc;border:1px solid #dce6f3;border-radius:10px}.operation label{font-weight:750;font-size:12px;color:#31445c}.operation select{flex:1;min-width:200px}.operation small{flex-basis:100%;color:#6b7b92;font-size:11px}.actions{display:flex;gap:7px;flex-wrap:wrap;padding:0 16px 12px}.primary{background:#3468df!important;border-color:#3468df!important;color:white}.danger{color:#b04439;border-color:#eabcb6;background:#fff7f6}.tabs{display:flex;gap:18px;overflow:auto;flex-shrink:0;padding:0 16px;border-bottom:1px solid #e4eaf2}.tabs button{flex-shrink:0;border:0;border-radius:0;padding:10px 0;color:#7a889a;background:none;font-size:12px}.tabs button.on{color:#265cce;border-bottom:2px solid #3468df}',
     '.view{padding:12px 16px;min-height:0;flex:1;overflow:auto}.hidden{display:none!important}.tools{display:flex;gap:8px;margin-bottom:10px}input,select{border:1px solid #dce3ed;border-radius:8px;background:#fff;padding:8px;color:#22324a;min-width:0}input[type=search]{flex:1}table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px}th{text-align:left;color:#7c899b;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:8px 6px;background:#f7f9fc;position:sticky;top:0}td{padding:10px 6px;border-bottom:1px solid #edf1f6;vertical-align:top}tr.currentrow{background:#eff5ff}td .title{font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}td small{color:#8290a2;display:block;font-size:10px;overflow-wrap:anywhere}.badge{font-size:10px;padding:3px 7px;border-radius:6px;display:inline-block;white-space:nowrap;background:#eef2f7;color:#62738a}.badge.done{background:#e4f5ec;color:#147c55}.badge.bad{background:#fff0e8;color:#b24b28}.badge.uncertain{background:#fff6dc;color:#956400}.badge.work{background:#e7efff;color:#2b62ce}',
@@ -953,9 +1004,9 @@
       '<div class="body"><div class="stats">'+
       '<div class="card"><b id="total">0</b><span>Товаров в файле</span></div>'+
       '<div class="card done"><b id="done">0</b><span id="doneLabel">Выполнено</span></div>'+
-      '<div class="card bad"><b id="missing">0</b><span>Не найдено</span></div>'+
-      '<div class="card bad"><b id="errors">0</b><span>Ошибки</span></div>'+
-      '<div class="card"><b id="unconfirmed">0</b><span>Без подтверждения</span></div></div>'+
+      
+      
+      '<div class="card"><b id="issues">0</b><span>Требуют внимания</span></div></div>'+
       '<div class="progress"><i id="bar"></i></div>'+
       '<div class="current"><i class="dot" id="dot"></i><span id="current">Загрузите Excel с товарами</span></div>'+
       '<div class="operation"><label for="operation">Действие с товарами</label>'+
@@ -996,7 +1047,9 @@
       '</div><div class="tools logsummary"><span id="logFound">Журнал пуст</span>'+
       '<button id="downloadLog">↓ Скачать весь журнал TXT</button></div>'+
       '<div id="logs" class="loglist"></div></div>'+
-      '<div class="view hidden" id="import"><div class="tools"><button class="danger" id="reset">Сбросить очередь и журнал</button></div>'+
+      '<div class="view hidden" id="import"><div class="tools">'+
+      '<button class="danger" id="reset">Сбросить очередь и журнал</button>'+
+      '<button class="hidden" id="legacyPrices">Восстановить очередь цен из v2.4</button></div>'+
       '<div class="drop" id="drop"><label for="file">Выбрать Excel / CSV</label><input type="file" id="file" accept=".xlsx,.xls,.csv" hidden>'+
       '<small>Или перетащите файл сюда</small><small id="filename">Файл не выбран</small></div>'+
       '<div class="hidden" id="mapping"><div class="mapping"><label for="sheet">Лист Excel</label><select id="sheet"></select>'+ 
@@ -1093,6 +1146,7 @@
     $('#report').onclick=report;
     $('#downloadLog').onclick=downloadLog;
     $('#reset').onclick=reset;
+    $('#legacyPrices').onclick=migrateLegacyPrices;
     $('#prev').onclick=()=>{page=Math.max(0,page-1);renderRows();};
     $('#next').onclick=()=>{page++;renderRows();};
     $('#search').oninput=e=>{search=e.target.value;page=0;renderRows();};
@@ -1189,9 +1243,7 @@
     $('#total').textContent=state.rows.length;
     $('#done').textContent=done;
     $('#doneLabel').textContent=state.action==='private'?'Приватных':state.action==='price'?'Цены обработаны':'Выполнено';
-    $('#missing').textContent=missing;
-    $('#errors').textContent=error;
-    $('#unconfirmed').textContent=unconfirmed;
+    $('#issues').textContent=missing+error+unconfirmed;
     $('#bar').style.width=(state.rows.length?
       Math.round(100*(done+missing+error+unconfirmed+count('skipped'))/state.rows.length):0)+'%';
     const row=current();
@@ -1219,6 +1271,10 @@
     $('#report').disabled=!state.rows.length;
     $('#load').disabled=state.running||busy||!book||excelColumn<0||(state.action==='price'&&priceColumn<0);
     $('#reset').disabled=state.running||busy;
+    $('#legacyPrices').disabled=state.running||busy;
+    const oldPrice=GM_getValue(PRICE_KEY,null);
+    $('#legacyPrices').classList.toggle('hidden',
+      !oldPrice||!Array.isArray(oldPrice.rows)||!oldPrice.rows.length);
     $('#priceColumn').disabled=state.running||busy||!book;
     $('#footer').textContent=state.updated?'Сохранено · '+new Date(state.updated).toLocaleTimeString('ru-RU'):
       'Очередь сохраняется автоматически';
