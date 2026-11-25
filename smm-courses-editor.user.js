@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.3.10
+// @version      1.3.11
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -48,7 +48,7 @@
 
 (() => {
   'use strict';
-  const SCRIPT_VERSION='1.3.10';
+  const SCRIPT_VERSION='1.3.11';
   const HOSTS = new Set(['smmmaster.net', 'hottestcourse.com', 'learnmarket.net', 'profcourse.com', 'bestsocials.online']);
   const SITE = location.hostname.replace(/^www\./, '');
   if (location.protocol !== 'https:' || !HOSTS.has(SITE)) return;
@@ -112,10 +112,18 @@
     sessionStorage.setItem(COURSE_WORKER_SESSION,String(workerRequested));
   }
   const namedWorker = window.name.startsWith(WORKER_PREFIX) ? Number(window.name.slice(WORKER_PREFIX.length)) : 0;
-  const WORKER_ID = !IS_DASHBOARD && validWorker(namedWorker) &&
-    sessionStorage.getItem(COURSE_WORKER_SESSION)===String(namedWorker) ? namedWorker : 0;
-  const IS_COURSE_WORKER = WORKER_ID>0;
   const MASTER_KEY = `bwo.wc.course.product.v1.${SITE}`;
+  const rememberedWorker = sessionStorage.getItem(COURSE_WORKER_SESSION)===String(namedWorker);
+  // WordPress may redirect admin from example.com to www.example.com, where sessionStorage
+  // is a separate origin. Re-identify the named tab only if this exact worker is active.
+  const candidatePool = validWorker(namedWorker) ? GM_getValue(MASTER_KEY+'.pool',null) : null;
+  const candidateShard = validWorker(namedWorker) ? GM_getValue(MASTER_KEY+'.worker.'+namedWorker,null) : null;
+  const matchingActiveWorker = candidatePool?.workers?.includes(namedWorker) &&
+    candidateShard?.run===candidatePool.run && candidateShard.running===true;
+  const WORKER_ID = !IS_DASHBOARD && validWorker(namedWorker) &&
+    (rememberedWorker||matchingActiveWorker) ? namedWorker : 0;
+  if(WORKER_ID && !rememberedWorker)sessionStorage.setItem(COURSE_WORKER_SESSION,String(WORKER_ID));
+  const IS_COURSE_WORKER = WORKER_ID>0;
   const POOL_KEY = MASTER_KEY + '.pool';
   const workerKey = id => MASTER_KEY+'.worker.'+id;
   const KEY = IS_COURSE_WORKER ? workerKey(WORKER_ID) : MASTER_KEY;
@@ -544,7 +552,10 @@
     if(IS_COURSE_WORKER)window.name=WORKER_PREFIX+WORKER_ID;
     persist();leaving=true;
     const resolved=new URL(url,ORIGIN);
-    if(resolved.origin!==ORIGIN)throw error('Запрещён переход на другой сайт.',true);
+    // A shop can canonically redirect between the www and non-www admin host.
+    if(resolved.protocol!==location.protocol || resolved.hostname.replace(/^www\./,'')!==SITE)
+      throw error('Запрещён переход на другой сайт.',true);
+    resolved.host=location.host;
     if(resolved.href===location.href)location.reload();else location.assign(resolved.href);
   }
   async function between(){
@@ -654,7 +665,7 @@
           if(halted)state.stopAfterVerify=true;
           if(!leaving){
             log('warn','WordPress не перешёл автоматически после Update. Открываю свежую страницу товара в той же вкладке для проверки. Повторного Update не будет.',r);
-            leaving=true;persist();location.replace(r.url);
+            leaving=true;persist();location.replace(productURL(r.id));
           }
           return;
         }catch(ex){
@@ -1743,7 +1754,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.10</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.11</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
