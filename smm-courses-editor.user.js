@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.2.2
+// @version      1.2.3
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -1080,13 +1080,13 @@ function initializeDateManager(root, context) {
   }
 
   function storeImported(ids, source) {
-    searchCache.clear();
     if (state.status === 'running') { log('Сначала поставьте скрипт на паузу, затем заменяйте список ID', 'error'); return; }
+    searchCache.clear();
     ids = unique(ids);
     if (!ids.length) { log('Не удалось найти числовые ID в выбранном столбце', 'error'); return; }
     if (state.records.length && !confirm('Заменить текущий список и сбросить историю? Перед заменой скачайте отчет, если он нужен.')) return;
-    const { dateFrom, dateTo } = state;
-    state = { ...emptyState(), dateFrom, dateTo };
+    const { dateFrom, dateTo, delayMs, fastMode, prefetch } = state;
+    state = { ...emptyState(), dateFrom, dateTo, delayMs, fastMode, prefetch };
     state.ids = ids;
     state.source = source;
     state.lastMessage = `Загружено ${ids.length} уникальных ID. Нажмите «Тест: 3 ID» или «Старт».`;
@@ -1475,8 +1475,8 @@ function initializeDateManager(root, context) {
   $('#smm-reset').addEventListener('click', () => {
     if (state.status === 'running') { log('Сначала поставьте скрипт на паузу', 'error'); return; }
     if (!confirm('Удалить загруженную очередь и историю результатов в этом браузере?')) return;
-    const { dateFrom, dateTo } = state;
-    state = { ...emptyState(), dateFrom, dateTo }; save(); draw();
+    const { dateFrom, dateTo, delayMs, fastMode, prefetch } = state;
+    state = { ...emptyState(), dateFrom, dateTo, delayMs, fastMode, prefetch }; save(); draw();
   });
   $('#smm-dry').addEventListener('change', e => { state.dryRun = e.target.checked; save(); });
   $('#smm-delay').addEventListener('change', e => {
@@ -1509,7 +1509,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>Редактор курсов для SMM курсов</b><small>${esc(SITE)} · v1.2.2</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.2.3</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
