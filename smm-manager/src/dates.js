@@ -308,13 +308,13 @@ function initializeDateManager(root, context) {
   }
 
   function storeImported(ids, source) {
-    searchCache.clear();
     if (state.status === 'running') { log('Сначала поставьте скрипт на паузу, затем заменяйте список ID', 'error'); return; }
+    searchCache.clear();
     ids = unique(ids);
     if (!ids.length) { log('Не удалось найти числовые ID в выбранном столбце', 'error'); return; }
     if (state.records.length && !confirm('Заменить текущий список и сбросить историю? Перед заменой скачайте отчет, если он нужен.')) return;
-    const { dateFrom, dateTo } = state;
-    state = { ...emptyState(), dateFrom, dateTo };
+    const { dateFrom, dateTo, delayMs, fastMode, prefetch } = state;
+    state = { ...emptyState(), dateFrom, dateTo, delayMs, fastMode, prefetch };
     state.ids = ids;
     state.source = source;
     state.lastMessage = `Загружено ${ids.length} уникальных ID. Нажмите «Тест: 3 ID» или «Старт».`;
@@ -703,8 +703,8 @@ function initializeDateManager(root, context) {
   $('#smm-reset').addEventListener('click', () => {
     if (state.status === 'running') { log('Сначала поставьте скрипт на паузу', 'error'); return; }
     if (!confirm('Удалить загруженную очередь и историю результатов в этом браузере?')) return;
-    const { dateFrom, dateTo } = state;
-    state = { ...emptyState(), dateFrom, dateTo }; save(); draw();
+    const { dateFrom, dateTo, delayMs, fastMode, prefetch } = state;
+    state = { ...emptyState(), dateFrom, dateTo, delayMs, fastMode, prefetch }; save(); draw();
   });
   $('#smm-dry').addEventListener('change', e => { state.dryRun = e.target.checked; save(); });
   $('#smm-delay').addEventListener('change', e => {
