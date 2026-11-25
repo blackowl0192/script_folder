@@ -727,7 +727,7 @@
     d.querySelector('[data-recheck]').disabled=!r.expected||!r.saveAt;
     d.querySelector('[data-recheck]').onclick=()=>{
       if(!editable())return;const row=state.rows.find(x=>x.key===r.key);
-      row.status='verifying';row.message='Повторная проверка без Update';row.saveDoc=DOC;state.index=state.rows.indexOf(row);state.phase='verifying';persist();d.remove();start(true);
+      row.status='verifying';row.message='Повторная проверка без Update';row.saveDoc=DOC;state.index=-1;state.phase='idle';persist();d.remove();launchCourse(true);
     };
     d.querySelector('[data-reset]').onclick=()=>{
       if(!editable())return;const row=state.rows.find(x=>x.key===r.key);
@@ -764,20 +764,24 @@
   function renderLog(){if(root)$('logs').innerHTML=state.logs.slice().reverse().map(x=>`<div class="log ${esc(x.level)}"><time>${new Date(x.time).toLocaleTimeString()}</time><span>${x.row?'№ '+x.row:'Система'}</span><span>${esc(x.message)}</span></div>`).join('')||'<div class="empty">Журнал пуст</div>';}
   function render(){
     if(!root)return;
+    if(!IS_COURSE_WORKER && !working)state=mergedCourseState();
     const count=statuses=>state.rows.filter(r=>statuses.includes(r.status)).length;
     $('total').textContent=state.rows.length;$('done').textContent=count(['done']);$('pending').textContent=count(['pending',...ACTIVE]);$('failed').textContent=count(['error','review']);
     $('bar').style.width=(state.rows.length?100*count(['done','skipped'])/state.rows.length:0)+'%';
     const current=state.rows[state.index];
-    $('current').textContent=(working||state.running)?(halted?'Остановка после текущей операции':`${STATUSES[current?.status]||'Работа'} · ${current?.name||current?.id||''}`):
+    const ws=state.poolWorkers||[];
+    $('current').textContent=ws.length?('Рабочие вкладки: '+ws.filter(x=>x.live).length+'/'+ws.length+' · '+ws.map(x=>'№'+x.id+': '+x.done+'/'+x.total+(x.live?' работает':'')).join(' · ')):
+      (working||state.running)?(halted?'Остановка после текущей операции':`${STATUSES[current?.status]||'Работа'} · ${current?.name||current?.id||''}`):
       state.paused?'На паузе — нажмите Продолжить':state.rows.length?`${state.filename} · ${SITE}`:'Загрузите Excel с товарами';
     const hasWork=state.rows.some(x=>x.status==='pending'||ACTIVE.has(x.status));
-    const isActive=working||!!state.running;
+    const isActive=working||!!state.running||poolBusy();
     $('start').disabled=isActive||!hasWork;$('one').disabled=isActive||!hasWork;$('stop').disabled=!isActive;$('pause').disabled=!isActive||halted;
     $('start').textContent=state.paused||state.rows.some(x=>ACTIVE.has(x.status))?'▶ Продолжить':'▶ Начать';
-    $('retry').disabled=working||!state.rows.some(x=>x.status==='error'&&!x.invalid);
+    $('retry').disabled=isActive||!state.rows.some(x=>x.status==='error'&&!x.invalid);
     $('load').disabled=isActive;$('reset').disabled=isActive;
-    $('delay').disabled=isActive;$('stopOnError').disabled=isActive;
+    $('delay').disabled=isActive;$('stopOnError').disabled=isActive;$('workers').disabled=isActive;
     $('delay').value=state.settings.delay;$('stopOnError').checked=!!state.settings.stopOnError;
+    $('workers').value=Math.max(1,Math.min(5,Number(state.settings.workers)||1));
     $('updated').textContent=state.updated?`Сохранено ${new Date(state.updated).toLocaleTimeString()} · ${SITE}`:`Очередь хранится отдельно для ${SITE}`;
     root.querySelector('[data-tab="processed"]').textContent=`Обработанные (${count(['done','review'])})`;
     if(['queue','processed'].includes(tab))renderRows();if(tab==='log')renderLog();
@@ -806,51 +810,55 @@
     if(!w)notice('Браузер заблокировал новую вкладку. Разрешите всплывающие окна для сайта.');
   }
   function launchCourse(oneOnly){
-    if(working){notice('Редактор курсов уже выполняет задачу.');return;}
-    const fresh=GM_getValue(KEY,empty());
-    if(['running'].includes(GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.status) || GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.phase==='saving'){
-      notice('Редактор дат выполняет обновления на этом сайте. Сначала поставьте его на паузу.');return;
+    if(working || IS_COURSE_WORKER){notice('Запустите очередь из основной панели.');return;}
+    const dates=GM_getValue('bwo.smm.dates.v2.'+SITE,null);
+    if(dates?.status==='running'||dates?.phase==='saving'){notice('Редактор дат работает на этом сайте. Сначала остановите его.');return;}
+    if(poolBusy()){notice('Рабочие вкладки курсов уже активны.');return;}
+    const legacy=GM_getValue(MASTER_KEY+'.lease',null);
+    if(legacy?.expires>Date.now()){notice('Предыдущий обработчик курсов ещё активен.');return;}
+    const base=consolidatePool();
+    if(!base){notice('Рабочие потоки ещё завершают задачи.');return;}
+    const jobs=[...base.rows.filter(r=>r.status==='verifying'&&r.expected),...base.rows.filter(r=>r.status==='pending'||['opening','filling'].includes(r.status))];
+    if(!jobs.length){notice('Нет курсов в очереди. Для товара со статусом «Проверить» используйте проверку без Update.');return;}
+    const picked=oneOnly?jobs.slice(0,1):jobs;
+    const amount=oneOnly?1:Math.min(5,picked.length,Math.max(1,Math.round(Number(base.settings?.workers)||1)));
+    const pool={run:uid(),workers:Array.from({length:amount},(_,i)=>i+1),createdAt:Date.now(),oneOnly};
+    const buckets=pool.workers.map(()=>[]);
+    picked.forEach((row,i)=>buckets[i%amount].push({...row,status:['opening','filling'].includes(row.status)?'pending':row.status}));
+    for(let i=0;i<amount;i++){
+      const shard=empty();
+      shard.run=pool.run;shard.filename=base.filename;shard.single=oneOnly;
+      shard.settings={...empty().settings,...base.settings};shard.rows=buckets[i];
+      GM_setValue(workerKey(i+1),shard);
+      GM_setValue(workerKey(i+1)+'.lease',null);
+      GM_setValue(workerKey(i+1)+'.command',null);
     }
-    const lease=GM_getValue(LEASE,null);
-    if(lease&&lease.expires>Date.now()){notice('Очередь курсов уже запущена в другой вкладке.');return;}
-    const row=fresh.rows.find(r=>r.status==='pending'||ACTIVE.has(r.status));
-    if(!row){notice('Нет курсов в очереди. Импортируйте Excel.');return;}
-    const url=new URL(productURL(row.id));
-    url.searchParams.set('smm_manager','course-worker');
-    url.searchParams.set('smm_one',oneOnly?'1':'0');
-    const w=window.open(url.href,'smm-manager-courses-'+SITE);
-    if(!w)notice('Браузер заблокировал рабочую вкладку. Разрешите всплывающие окна.');
+    GM_setValue(POOL_KEY,pool);
+    let opened=0;
+    // Only N named tabs are opened per launch. All subsequent courses use location.assign in those tabs.
+    for(let i=0;i<amount;i++){
+      const url=new URL(productURL(buckets[i][0].id));
+      url.searchParams.set('smm_manager','course-worker');
+      url.searchParams.set('smm_worker',String(i+1));
+      url.searchParams.set('smm_run',pool.run);
+      url.searchParams.set('smm_one',oneOnly?'1':'0');
+      if(window.open(url.href,WORKER_PREFIX+(i+1)))opened++;
+    }
+    state=mergedCourseState();render();
+    if(opened<amount)notice('Открыто '+opened+' из '+amount+' вкладок. Разрешите всплывающие окна для сайта.');
   }
   function stopCourseFromPanel(pause){
-    if(working){stop(pause);return;}
-    if(!GM_getValue(KEY,empty()).running){notice('Очередь курсов сейчас не выполняется.');return;}
-    GM_setValue(COMMAND,{kind:pause?'pause':'stop',at:Date.now(),id:uid()});
+    if(IS_COURSE_WORKER){stop(pause);return;}
+    const pool=currentPool();
+    if(!pool){notice('Очередь курсов сейчас не выполняется.');return;}
+    let notified=0;
+    for(const id of pool.workers)if(activeLease(id)){
+      GM_setValue(workerKey(id)+'.command',{kind:pause?'pause':'stop',run:pool.run,id:uid(),at:Date.now()});
+      notified++;
+    }
+    if(!notified)notice('Активных потоков не обнаружено. После завершения можно нажать «Продолжить».');
   }
-  const css=`
-    .module-nav{display:flex;gap:8px;padding:9px 14px;background:#eef3fb;border-bottom:1px solid #d6e1ef;align-items:center}
-    .module-actions{display:flex;gap:8px;flex-wrap:wrap}
-    .module-nav button{font-size:12px;padding:8px 12px;background:#fff}
-    .module-nav button.active{background:#2e64ce;color:#fff;border-color:#2e64ce}
-    .module-nav .spacer{flex:1}
-    .panel.dashboard{inset:0!important;top:0!important;right:0!important;bottom:0!important;left:0!important;width:100vw!important;height:100vh!important;max-height:none!important;max-width:none!important;border-radius:0!important;resize:none!important}
 
-    :host{all:initial;font:13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#182438;color-scheme:light}
-    *{box-sizing:border-box}button,input,select{font:inherit}button{background:#fff;color:#26354c;border:1px solid #d9e1eb;border-radius:9px;padding:8px 12px;cursor:pointer;font-weight:600}button:hover{background:#edf3fa;color:#182438}button:disabled{opacity:.44;cursor:default}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #4374e9;outline-offset:2px}
-    .panel{position:fixed;right:18px;bottom:18px;width:760px;height:680px;max-width:calc(100vw - 24px);max-height:calc(100vh - 36px);display:flex;flex-direction:column;border-radius:16px;box-shadow:0 18px 75px #12243a55;background:white;border:1px solid #d6dfed;overflow:hidden;resize:both}
-    .panel.full{inset:20px;width:auto;height:auto;max-height:none;max-width:none;resize:none}
-    .head{background:#14263e;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;cursor:move;touch-action:none}.logo{width:36px;height:36px;border-radius:10px;background:#3d74e5;display:grid;place-items:center;font-weight:800;font-size:18px}.head b{font-size:16px}.head small{display:block;color:#aec0d8;font-size:11px}.head .space{flex:1}.head button{color:#fff;background:#ffffff18;border-color:#ffffff20;padding:5px 10px}.head button:hover{color:#fff;background:#ffffff35}
-    .body{display:flex;flex-direction:column;min-height:0;flex:1}.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:13px 15px 9px}.stat{border:1px solid #e4e9f2;background:#fafcfe;border-radius:10px;padding:8px 10px}.stat b{display:block;font-size:21px;line-height:1.25}.stat small{font-size:11px;color:#718198}.stat.success b{color:#17855a}.stat.bad b{color:#b64e3d}.progress{height:5px;background:#e9f0fa;margin:0 15px;border-radius:6px;overflow:hidden}.progress i{display:block;background:#3c74e9;height:100%;transition:width .3s}
-    .current{padding:10px 15px;color:#5c718a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.actions{display:flex;gap:7px;flex-wrap:wrap;padding:0 15px 10px}.primary{background:#346cdf!important;border-color:#346cdf!important;color:white!important}.primary:hover{background:#2459c8!important}.danger{background:#fff7f5;color:#a3433c;border-color:#edc2bc}
-    .tabs{display:flex;overflow-x:auto;flex-shrink:0;border-bottom:1px solid #e6ecf3;padding:0 15px;gap:16px}.tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:#718198;padding:10px 1px;font-size:12px;white-space:nowrap}.tabs button.active{color:#2661cd;border-bottom-color:#346cdf}
-    .view{padding:12px 15px;min-height:0;flex:1;overflow:auto}.hidden{display:none!important}.tools{display:flex;gap:8px;margin-bottom:10px}input,select{min-width:0;border:1px solid #dce3ed;border-radius:8px;background:white;color:#26364c;padding:8px}input[type=search]{flex:1}table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px}th{position:sticky;top:0;background:#f6f8fc;text-align:left;color:#8390a2;font-size:10px;text-transform:uppercase;letter-spacing:.4px;padding:8px 6px}td{padding:9px 6px;border-bottom:1px solid #edf1f6;vertical-align:top}td strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}td small{display:block;font-size:10px;color:#8694a7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}td button{padding:2px 7px}.current-row{background:#edf4ff}
-    .tag{border-radius:6px;background:#edf1f7;color:#5f718a;padding:3px 7px;font-size:10px;display:inline-block;white-space:nowrap}.tag.done{color:#147d50;background:#e3f6ec}.tag.error,.tag.review{color:#ad4b27;background:#fff0e7}.tag.saving,.tag.opening,.tag.filling,.tag.verifying{color:#2861c8;background:#e7efff}
-    .drop{border:2px dashed #c3d2e9;background:#f6faff;border-radius:12px;padding:18px;text-align:center;margin-bottom:12px}.drop label{font-weight:700;color:#2e62d7;cursor:pointer}.drop small{display:block;color:#788aa2;font-size:11px;margin-top:6px}.drop.over{background:#e8f1ff;border-color:#346cdf}.mapping{display:grid;grid-template-columns:150px minmax(0,1fr);gap:8px;align-items:center}.mapping label{color:#63758c}.hint{font-size:12px;color:#6b7b92;line-height:1.5}.notice{padding:10px 12px;margin:10px 0;background:#fff7e8;border:1px solid #e9d4a8;border-radius:9px;color:#80622f;font-size:12px}
-    .setting{display:flex;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid #edf1f6}.setting div{flex:1}.setting small{display:block;color:#78879c}.setting input[type=number]{width:80px}.foot{border-top:1px solid #e6edf5;background:#fafbfd;padding:8px 15px;display:flex;gap:10px;align-items:center;color:#7d8b9d;font-size:11px}.foot span:first-child{flex:1}.foot button{padding:4px 8px}
-    .log{display:grid;grid-template-columns:66px 48px 1fr;gap:8px;font-size:11px;padding:8px 0;border-bottom:1px solid #edf1f6;overflow-wrap:anywhere}.log time{color:#8c98a8}.log.error{color:#a63e30}.log.ok{color:#167b53}.empty{text-align:center;color:#8390a0;padding:32px 16px}.empty b{display:block;color:#263a55;font-size:15px}.help h3{font-size:13px;color:#2c405c}.help p,.help li{font-size:12px;color:#62748c}.help ol{padding-left:22px}
-    button.pill{position:fixed;right:18px;bottom:18px;color:#fff!important;background:#14263e!important;border:1px solid #365875!important;border-radius:13px;padding:12px 18px;box-shadow:0 8px 30px #0b234044;font-weight:700}button.pill:hover,button.pill:focus-visible{color:#fff!important;background:#294e79!important;border-color:#5e88b4!important}
-    .wc-error{position:absolute;bottom:52px;left:15px;right:15px;z-index:9;background:#fff1ef;border:1px solid #f0c1b8;color:#9f3e34;padding:12px;border-radius:10px;box-shadow:0 8px 25px #0002}.wc-error button{float:right;padding:1px 6px}.wc-detail{position:absolute;inset:60px 12px 12px;z-index:6;background:#fff;border:1px solid #d4e0ef;box-shadow:0 10px 35px #0003;border-radius:12px;padding:15px;overflow:auto}.wc-detail header{display:flex;justify-content:space-between}.wc-detail pre{white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.5 monospace;background:#f6f8fc;padding:10px;border-radius:8px}.wc-detail a{color:#2863da}.wc-detail .actions{padding:0}
-    @media(max-width:540px){.panel{right:7px;bottom:7px;width:calc(100vw - 14px);height:min(650px,calc(100vh - 14px))}.stats{gap:4px}.stat{padding:6px}.actions button{font-size:11px;padding:6px}.tabs{gap:11px}}
-  `;
 function initializeDateManager(root, context) {
   'use strict';
   const { SITE, ORIGIN } = context;
@@ -1606,7 +1614,7 @@ function initializeDateManager(root, context) {
       <div id="mapping" class="hidden"><div class="mapping"><label>ID товара</label><select id="map-id"></select><label>Name</label><select id="map-name"></select><label>Description (HTML)</label><select id="map-description"></select><label>Regular price</label><select id="map-price"></select><label>lessons</label><select id="map-lessons"></select><label>img (14 цифр)</label><select id="map-img"></select><label>Лист</label><select id="sheet"></select></div><p class="hint">При импорте цена 3.42€ распознаётся как 3.42, а в поле WooCommerce записывается 3,42. Колонка img — имя загруженного изображения из 14 цифр, НЕ WordPress attachment ID. Очередь перемешивается автоматически.</p><button class="primary" id="load">Загрузить в очередь</button></div>
       <div class="notice">Строки проверяются до запуска. Новая загрузка заменяет текущую очередь; скачайте отчёт, если он нужен. Обрабатываются только товары сайта <b>${esc(SITE)}</b>.</div></div>
       <div class="view hidden" id="log"><div class="tools"><button id="downloadLog">↓ Скачать журнал</button><span class="hint">Последние 2000 событий</span></div><div id="logs"></div></div>
-      <div class="view hidden" id="settings"><label class="setting"><div>Пауза между товарами<small>В секундах после проверки результата</small></div><input id="delay" type="number" min="1" max="60" value="3"></label><label class="setting"><input id="stopOnError" type="checkbox" checked><div>Останавливаться при ошибке<small>Рекомендуется: ошибка может оставить несохранённые изменения в редакторе</small></div></label><div class="setting"><div>Перемешивание Excel<small>Однократно при каждом импорте; исходные номера строк сохраняются</small></div><span class="tag done">Всегда</span></div><div class="setting"><div>Downloadable<small>Флажок снимается у каждого товара</small></div><span class="tag done">Всегда</span></div><button id="backup">↓ Резервная копия JSON</button></div>
+      <div class="view hidden" id="settings"><label class="setting"><div>Параллельных потоков<small>От 1 до 5 рабочих вкладок. Каждая вкладка обрабатывает много курсов по очереди — новые вкладки не создаются для каждого товара.</small></div><input id="workers" type="number" min="1" max="5" step="1" value="1"></label><label class="setting"><div>Пауза между товарами<small>В секундах после проверки результата</small></div><input id="delay" type="number" min="1" max="60" value="3"></label><label class="setting"><input id="stopOnError" type="checkbox" checked><div>Останавливаться при ошибке<small>Рекомендуется: ошибка может оставить несохранённые изменения в редакторе</small></div></label><div class="setting"><div>Перемешивание Excel<small>Однократно при каждом импорте; исходные номера строк сохраняются</small></div><span class="tag done">Всегда</span></div><div class="setting"><div>Downloadable<small>Флажок снимается у каждого товара</small></div><span class="tag done">Всегда</span></div><button id="backup">↓ Резервная копия JSON</button></div>
       <div class="view help hidden" id="help"><h3>1. Подготовьте Excel</h3><p>Первая строка: <b>ID, Name, Description, Regular price, lessons, img</b>. ID — существующий post ID товара. Description — HTML, как в редакторе WordPress. Regular price может быть с € или запятой. lessons — целое положительное число. img — 14-значное имя уже загруженной фотографии в Media Library (не внутренний attachment ID).</p>
       <h3>2. Импортируйте товары</h3><ol><li>Войдите в <b>${esc(SITE)}</b> как администратор.</li><li>Откройте «Импорт Excel», выберите файл, лист и шесть колонок.</li><li>Нажмите «Загрузить в очередь». Курсы будут перемешаны; номера исходных строк останутся в отчёте.</li><li>Нажмите «Один товар» и проверьте сохранённые поля на сайте; после этого нажмите «Начать» для остальных.</li></ol>
       <h3>3. Что делает скрипт</h3><p>Открывает <code>/wp-admin/post.php?post=ID&amp;action=edit</code>. Заполняет Name и slug, переключает редактор Description в Text, вставляет HTML и возвращается в Visual. Меняет Regular price и ACF lessons, снимает Downloadable, удаляет старую обложку, ищет точную фотографию по img и нажимает Set product image. После проверки полей нажимает Update и перезагружает товар для сверки.</p>
@@ -1624,6 +1632,7 @@ function initializeDateManager(root, context) {
     on('search','input',e=>{search=e.target.value;page=0;renderRows();});on('filter','change',e=>{filter=e.target.value;page=0;renderRows();});
     on('prev','click',()=>{page=Math.max(0,page-1);renderRows();});on('next','click',()=>{page++;renderRows();});
     on('delay','change',e=>{if(!editable())return;state.settings.delay=Math.min(60,Math.max(1,Number(e.target.value)||3));persist();render();});
+    on('workers','change',e=>{if(!editable())return;state.settings.workers=Math.max(1,Math.min(5,Math.round(Number(e.target.value)||1)));persist();render();});
     on('stopOnError','change',e=>{if(!editable())return;state.settings.stopOnError=e.target.checked;persist();render();});
     on('min','click',()=>{panel.classList.add('hidden');$('pill').classList.remove('hidden');});
     const show=()=>{panel.classList.remove('hidden');$('pill').classList.add('hidden');};
