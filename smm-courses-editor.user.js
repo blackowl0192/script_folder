@@ -620,6 +620,12 @@
     if(!activePool || activePool.run!==state.run || !activePool.workers.includes(WORKER_ID)){
       notice('Рабочая вкладка не принадлежит активному запуску.');return;
     }
+    const pendingCommand=GM_getValue(COMMAND,null);
+    if(pendingCommand?.run===state.run && ['stop','pause'].includes(pendingCommand.kind)){
+      state.running=false;state.paused=true;persist();
+      log('warn','Рабочий поток остановлен командой из панели до продолжения работы.');
+      return;
+    }
     if(['running'].includes(GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.status) || GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.phase==='saving'){
       log('error','Редактор дат выполняет задачи на этом сайте. Одновременные изменения заблокированы.');
       return;
@@ -870,12 +876,13 @@
     if(IS_COURSE_WORKER){stop(pause);return;}
     const pool=currentPool();
     if(!pool){notice('Очередь курсов сейчас не выполняется.');return;}
-    let notified=0;
-    for(const id of pool.workers)if(activeLease(id)){
+    let active=0;
+    for(const id of pool.workers){
+      if(activeLease(id))active++;
+      // Persist the command even for a tab that is still loading or navigating.
       GM_setValue(workerKey(id)+'.command',{kind:pause?'pause':'stop',run:pool.run,id:uid(),at:Date.now()});
-      notified++;
     }
-    if(!notified)notice('Активных потоков не обнаружено. После завершения можно нажать «Продолжить».');
+    notice((pause?'Пауза':'Стоп')+' отправлена для '+pool.workers.length+' потоков; активных: '+active+'.');
   }
 
 function initializeDateManager(root, context) {
