@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.2.0
+// @version      1.2.1
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -702,11 +702,20 @@
     if(['queue','processed'].includes(tab))renderRows();if(tab==='log')renderLog();
   }
 
+  // Register additional functions here without changing the shared panel or queue engines.
+  const MODULES = [];
+  function registerModule(module){
+    if(!module?.id||!module?.title||!module?.container||MODULES.some(m=>m.id===module.id))
+      throw new Error('Некорректный или повторяющийся модуль SMM');
+    MODULES.push(module);
+  }
+  registerModule({id:'courses',title:'Редактор курсов',container:'course-content'});
+  registerModule({id:'dates',title:'Редактор дат',container:'date-content',
+    mount:()=>initializeDateManager(root,{SITE,ORIGIN})});
   function selectModule(name){
-    const chosen=name==='dates'?'dates':'courses';
     if(!root)return;
-    $('course-content').classList.toggle('hidden',chosen!=='courses');
-    $('date-content').classList.toggle('hidden',chosen!=='dates');
+    const chosen=MODULES.some(m=>m.id===name)?name:MODULES[0].id;
+    MODULES.forEach(m=>$(m.container).classList.toggle('hidden',m.id!==chosen));
     root.querySelectorAll('[data-module]').forEach(b=>b.classList.toggle('active',b.dataset.module===chosen));
     GM_setValue(MODE_KEY,chosen);
   }
@@ -738,6 +747,7 @@
   }
   const css=`
     .module-nav{display:flex;gap:8px;padding:9px 14px;background:#eef3fb;border-bottom:1px solid #d6e1ef;align-items:center}
+    .module-actions{display:flex;gap:8px;flex-wrap:wrap}
     .module-nav button{font-size:12px;padding:8px 12px;background:#fff}
     .module-nav button.active{background:#2e64ce;color:#fff;border-color:#2e64ce}
     .module-nav .spacer{flex:1}
@@ -971,7 +981,7 @@ function initializeDateManager(root, context) {
   panel.innerHTML = `
     <div class="head" id="smm-grip">
       <div class="badge">◷</div>
-      <div><strong>Редактор дат товаров</strong><small>${SITE} · Quick Edit · v1.1.0</small></div>
+      <div><strong>Редактор дат товаров</strong><small>${SITE} · Quick Edit · v1.2.0</small></div>
       <div class="spacer"></div><button class="iconbtn" id="smm-collapse" title="Свернуть/развернуть" type="button">−</button>
     </div>
     <div class="main">
@@ -1288,7 +1298,9 @@ function initializeDateManager(root, context) {
       }
       if (!row.querySelector('.editinline')) return false;
       const imported = document.importNode(row,true);
-      list.replaceChildren(imported);
+      // Do not remove WordPress's hidden Quick Edit/Bulk Edit templates.
+      const templates = [...list.querySelectorAll('#inline-edit,#bulk-edit')];
+      list.replaceChildren(imported,...templates);
       const inlineMeta = parsed.getElementById('inline_' + id);
       if (inlineMeta && !document.getElementById('inline_' + id)) imported.append(document.importNode(inlineMeta,true));
       log('ID '+id+': строка товара найдена через fetch без полной загрузки страницы');
@@ -1347,6 +1359,10 @@ function initializeDateManager(root, context) {
     } finally { busy = false; draw(); }
   }
   function start(limit = null) {
+    if (window.__SMM_RANDOM_DATES__) {
+      log('Обнаружен старый отдельный smmmaster_random_dates.user.js. Отключите его в Tampermonkey, чтобы избежать двойной обработки.', 'error');
+      return;
+    }
     const courseState = GM_getValue('bwo.wc.course.product.v1.'+SITE, null);
     if (courseState?.running) { log('Редактор курсов сейчас выполняет обновления на этом сайте. Дождитесь завершения.', 'error'); return; }
     if (!state.ids.length) { log('Сначала загрузите список ID', 'error'); return; }
@@ -1489,8 +1505,8 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>Редактор курсов для SMM курсов</b><small>${esc(SITE)} · v1.2.0</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
-      <nav class="module-nav"><button data-module="courses" class="active">1. Редактор курсов</button><button data-module="dates">2. Редактор дат</button><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>Редактор курсов для SMM курсов</b><small>${esc(SITE)} · v1.2.1</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
       <div class="actions"><button class="primary" id="start">▶ Начать</button><button id="one">Один товар</button><button id="pause">Ⅱ Пауза</button><button class="danger" id="stop">■ Стоп</button><button id="retry">Повторить ошибки</button><button id="report">↓ Отчёт</button></div>
@@ -1523,16 +1539,20 @@ function initializeDateManager(root, context) {
     const show=()=>{panel.classList.remove('hidden');$('pill').classList.add('hidden');};
     on('pill','click',show);
     on('dashboard','click',openDashboard);
-    root.querySelectorAll('[data-module]').forEach(b=>b.addEventListener('click',()=>selectModule(b.dataset.module)));
-    GM_registerMenuCommand('1. Редактор курсов',()=>{show();selectModule('courses');});
-    GM_registerMenuCommand('2. Редактор дат',()=>{show();selectModule('dates');});
+    MODULES.forEach((m,i)=>{
+      const button=document.createElement('button');
+      button.type='button';button.dataset.module=m.id;button.textContent=(i+1)+'. '+m.title;
+      $('module-buttons').append(button);
+      button.addEventListener('click',()=>selectModule(m.id));
+      GM_registerMenuCommand((i+1)+'. '+m.title,()=>{show();selectModule(m.id);});
+    });
     GM_registerMenuCommand('Открыть менеджер в отдельной вкладке',openDashboard);
     on('full','click',()=>{maximized=!maximized;panel.classList.toggle('full',maximized);panel.style.top='';panel.style.left='';panel.style.right='';panel.style.bottom='';});
     let drag=null;
     on('drag','pointerdown',e=>{if(e.target.closest('button')||maximized)return;const rect=panel.getBoundingClientRect();drag={x:e.clientX-rect.left,y:e.clientY-rect.top};e.currentTarget.setPointerCapture(e.pointerId);});
     on('drag','pointermove',e=>{if(!drag)return;panel.style.left=Math.max(0,Math.min(innerWidth-panel.offsetWidth,e.clientX-drag.x))+'px';panel.style.top=Math.max(0,Math.min(innerHeight-panel.offsetHeight,e.clientY-drag.y))+'px';panel.style.right='auto';panel.style.bottom='auto';});
     on('drag','pointerup',()=>drag=null);
-    initializeDateManager(root,{SITE,ORIGIN});
+    MODULES.forEach(m=>m.mount?.());
     if(IS_DASHBOARD){
       panel.classList.add('dashboard');
       document.documentElement.style.overflow='hidden';
