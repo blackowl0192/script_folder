@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.3.2
+// @version      1.3.3
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -834,7 +834,17 @@
     if(legacy?.expires>Date.now()){notice('Предыдущий обработчик курсов ещё активен.');return;}
     const base=consolidatePool();
     if(!base){notice('Рабочие потоки ещё завершают задачи.');return;}
-    const jobs=[...base.rows.filter(r=>r.status==='verifying'&&r.expected),...base.rows.filter(r=>r.status==='pending'||['opening','filling'].includes(r.status))];
+    const uncertain=base.rows.filter(r=>['saving','verifying'].includes(r.status)&&!r.expected);
+    if(uncertain.length){
+      for(const row of uncertain){
+        row.status='review';
+        row.message='Предыдущая операция сохранения не имеет данных для проверки. Проверьте товар вручную.';
+      }
+      GM_setValue(MASTER_KEY,base);
+    }
+    // A previous Update with expected values is verified only; it is never submitted again.
+    const jobs=[...base.rows.filter(r=>['saving','verifying'].includes(r.status)&&r.expected),
+      ...base.rows.filter(r=>r.status==='pending'||['opening','filling'].includes(r.status))];
     if(!jobs.length){notice('Нет курсов в очереди. Для товара со статусом «Проверить» используйте проверку без Update.');return;}
     const picked=oneOnly?jobs.slice(0,1):jobs;
     const amount=oneOnly?1:Math.min(5,picked.length,Math.max(1,Math.round(Number(base.settings?.workers)||1)));
@@ -1640,7 +1650,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.2</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.3</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
