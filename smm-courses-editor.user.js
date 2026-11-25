@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.4.1
+// @version      1.5.0
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -48,7 +48,7 @@
 
 (() => {
   'use strict';
-  const SCRIPT_VERSION='1.4.1';
+  const SCRIPT_VERSION='1.5.0';
   const HOSTS = new Set(['smmmaster.net', 'hottestcourse.com', 'learnmarket.net', 'profcourse.com', 'bestsocials.online']);
   const SITE = location.hostname.replace(/^www\./, '');
   if (location.protocol !== 'https:' || !HOSTS.has(SITE)) return;
@@ -748,22 +748,21 @@
             state.running=false;state.paused=true;state.phase='idle';persist();
             log('error',r.message,r);pauseOtherCourseWorkers();break;
           }
-          if(productIDFromURL(location.href)!==r.id){stage(r,'opening','Открываем товар WooCommerce');nav(r.url,'open');return;}
-          await editorReady(['saving','verifying'].includes(r.status));
+          // Check a previously submitted Update BEFORE deciding to navigate
+          // to an editor page. Verification is GET-only and page-independent.
           if(r.expected&&['saving','verifying'].includes(r.status)){
-            // A previous update may have finished. Never submit a second update during verification.
-            if(r.saveDoc===DOC){stage(r,'verifying','Загружаем страницу заново, чтобы проверить результат Update');nav(r.url,'verify');return;}
-            stage(r,'verifying','Проверяем сохранение на новой странице');
-            const actual=await snapshot(true);
-            r.actual=actual;r.checked=new Date().toISOString();
-            const diff=differences(actual,r.expected);
-            if(diff.length){r.status='review';r.message=`После сохранения не совпали: ${diff.join(', ')}. Повторный Update не отправлен.`;log('error',r.message,r);pauseOtherCourseWorkers();}
-            else{r.status='done';r.message='Все значения подтверждены после перезагрузки';log('ok',r.message,r);}
-            const stopNow=state.stopAfterVerify||single||halted||(r.status==='review'&&state.settings.stopOnError);
+            await verifySavedRow(r);
+            const stopNow=state.stopAfterVerify||single||halted||
+              (r.status==='review'&&state.settings.stopOnError);
             state.stopAfterVerify=false;state.phase='idle';state.index=-1;persist();
             if(stopNow){state.running=false;persist();break;}
             await between();continue;
           }
+          if(productIDFromURL(location.href)!==r.id){
+            stage(r,'opening','Открываем товар WooCommerce');
+            nav(r.url,'open');return;
+          }
+          await editorReady(false);
           stage(r,'filling','Считываем товар, заполняем данные');
           r.before=await snapshot();persist();
           await fill('input#title[name="post_title"]',r.name);
@@ -823,9 +822,13 @@
           // Keeping the manager alive during POST avoids the lost-page event
           // that blocked processing after a native button.click() navigation.
           if(halted)state.stopAfterVerify=true;
-          log('info','Ответ на POST получен. Открываю свежую страницу товара для сверки без повторного Update.',r);
-          nav(productURL(r.id),'verify');
-          return;
+          log('info','POST принят. Проверяю товар с сервера через GET без перезагрузки рабочей вкладки.',r);
+          await verifySavedRow(r);
+          const stopAfter=state.stopAfterVerify||single||halted||
+            (r.status==='review'&&state.settings.stopOnError);
+          state.stopAfterVerify=false;state.phase='idle';state.index=-1;persist();
+          if(stopAfter){state.running=false;persist();break;}
+          await between();continue;
         }catch(ex){
           if(ex===STOP)throw ex;
           r.status=r.saveAt&&r.expected?'review':'error';r.message=ex.message||String(ex);
@@ -870,10 +873,8 @@
       single=automatic?!!state.single:oneOnly;
       if(!automatic){state.paused=false;state.single=oneOnly;}
       state.owner=tabId;state.running=true;
-      const r=state.rows[state.index];
-      if(r&&['saving','verifying'].includes(r.status)&&r.expected&&r.saveDoc===DOC){
-        state.phase='verifying';r.status='verifying';persist();nav(r.url,'verify');return;
-      }
+      // Stalled saving/verifying rows are checked by GET in run().
+      // Never navigate or repeat Update just to verify a saved product.
       persist();render();await run();
     }catch(ex){state.running=false;persist();release();log('error',ex.message||String(ex));}
   }
@@ -1912,7 +1913,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.4.1</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.5.0</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
