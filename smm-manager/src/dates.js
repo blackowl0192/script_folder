@@ -599,7 +599,18 @@ function initializeDateManager(root, context) {
     const courseKey = 'bwo.wc.course.product.v1.' + SITE;
     const courseState = GM_getValue(courseKey, null);
     const courseLease = GM_getValue(courseKey + '.lease', null);
-    if (courseState?.running || (courseLease && courseLease.expires > Date.now())) {
+    const coursePool = GM_getValue(courseKey + '.pool', null);
+    const liveCoursePool = coursePool?.workers?.some(id => {
+      const key = courseKey + '.worker.' + id;
+      const lease = GM_getValue(key + '.lease',null);
+      const shard = GM_getValue(key,null);
+      const live = lease?.expires > Date.now();
+      const recentlySaving = shard?.run === coursePool.run && shard?.running &&
+        Date.now()-Date.parse(shard.updated||0)<120000;
+      return live || recentlySaving;
+    });
+    if (courseState?.running || (courseLease && courseLease.expires > Date.now()) ||
+        liveCoursePool || (coursePool && Date.now()-coursePool.createdAt < 20000)) {
       log('Редактор курсов сейчас выполняет обновления на этом сайте. Дождитесь завершения.', 'error'); return;
     }
     if (!state.ids.length) { log('Сначала загрузите список ID', 'error'); return; }
