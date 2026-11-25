@@ -31,7 +31,7 @@ function initializeDateManager(root, context) {
     ids: [], index: 0, status: 'idle', phase: 'search',
     records: [], notes: [], lastMessage: 'Загрузите файл с ID',
     batchRemaining: null, dateCandidate: null, source: '',
-    missStreak: 0, delayMs: 350, fastMode: false, dryRun: false,
+    missStreak: 0, delayMs: 350, fastMode: false, prefetch: 2, dryRun: false,
     dateFrom: DEFAULT_DATE_FROM, dateTo: DEFAULT_DATE_TO,
     lastChanged: Date.now()
   });
@@ -231,6 +231,7 @@ function initializeDateManager(root, context) {
       <label class="caption">История операций</label><div class="log" id="smm-log" aria-live="polite"></div>
       <div class="options" style="margin-top:9px"><label>Пауза между ID (мс) <input id="smm-delay" type="number" min="200" max="15000" step="50" style="width:100px" /></label></div>
       <div class="options"><label><input id="smm-fast" type="checkbox" /> Ускоренный поиск (включать после теста 3 ID; есть резервный режим)</label></div>
+      <div class="options"><label>Параллельных запросов поиска (1–5) <input id="smm-prefetch" type="number" min="1" max="5" step="1" style="width:70px" /></label></div>
       <div class="sub">Случайная дата внутри диапазона; 00:00 исключено. При 5 последовательных отсутствующих ID — автопауза. Отключите старую отдельную версию редактора дат.</div>
       </div>
       <div id="smm-date-processed" class="hidden"><h3>Обработанные товары</h3><div id="smm-result-table"></div></div>
@@ -279,6 +280,8 @@ function initializeDateManager(root, context) {
     $('#smm-delay').disabled = state.status === 'running';
     $('#smm-fast').checked = !!state.fastMode;
     $('#smm-fast').disabled = state.status === 'running';
+    $('#smm-prefetch').value = String(Math.max(1,Math.min(5,Number(state.prefetch)||2)));
+    $('#smm-prefetch').disabled = state.status === 'running' || !state.fastMode;
     const resultTable = $('#smm-result-table');
     if (resultTable) {
       const e = val => String(val??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -677,6 +680,10 @@ function initializeDateManager(root, context) {
   $('#smm-fast').addEventListener('change', e => {
     if (state.status === 'running') { e.target.checked=!!state.fastMode; return; }
     state.fastMode=e.target.checked; save(); draw();
+  });
+  $('#smm-prefetch').addEventListener('change', e => {
+    if (state.status === 'running') { e.target.value=state.prefetch; return; }
+    state.prefetch=Math.max(1,Math.min(5,Math.round(Number(e.target.value)||2))); save(); draw();
   });
   if (state.status === 'running' && state.phase === 'saving' && IS_DATE_WORKER) {
     state.status = 'paused';
