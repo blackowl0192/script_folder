@@ -16,7 +16,7 @@ function initializeDateManager(root, context) {
   const DEFAULT_DATE_FROM = DEFAULT_DATE_TO.slice(0,4) + '-01-01';
   const MAX_STORED_LOG = 60;
   const $ = (sel, scope = root) => scope.querySelector(sel);
-  const $ = (sel, scope = root) => Array.from(scope.querySelectorAll(sel));
+  const $$ = (sel, scope = document) => Array.from(scope.querySelectorAll(sel));
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   let busy = false;
   let rowsFromFile = [];
