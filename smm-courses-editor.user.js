@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.0.6
-// @description  Массовое редактирование WooCommerce-курсов из Excel: название, URL (slug), HTML-описание, обычная цена, количество уроков (ACF lessons), отключение Downloadable, обложка из медиатеки; очередь, проверка сохранения, журнал и отчёты.
+// @version      1.1.0
+// @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
 // @match        https://www.smmmaster.net/wp-admin/*
@@ -30,6 +30,7 @@
 // @require      https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_addValueChangeListener
 // @grant        GM_getTab
 // @grant        GM_saveTab
 // @grant        GM_registerMenuCommand
@@ -52,9 +53,16 @@
   const SITE = location.hostname.replace(/^www\./, '');
   if (location.protocol !== 'https:' || !HOSTS.has(SITE)) return;
   const ORIGIN = location.origin;
+  const SMM_PARAMS = new URLSearchParams(location.search);
+  const IS_DASHBOARD = SMM_PARAMS.get('smm_manager') === 'dashboard';
+  const COURSE_WORKER_SESSION = 'smm.manager.course.worker.' + SITE;
+  if (SMM_PARAMS.get('smm_manager') === 'course-worker') sessionStorage.setItem(COURSE_WORKER_SESSION, '1');
+  const IS_COURSE_WORKER = sessionStorage.getItem(COURSE_WORKER_SESSION) === '1';
   const KEY = `bwo.wc.course.product.v1.${SITE}`;
   const LEASE = `${KEY}.lease`;
   const TICKET = `${KEY}.nav`;
+  const COMMAND = `${KEY}.command`;
+  const MODE_KEY = `${KEY}.ui.mode`;
   const ALIAS = {id:['id','postid','productid'],name:['name','title','productname'],description:['description','content','info'],price:['regularprice','price'],lessons:['lessons','lesson'],img:['img','image','photo']};
   const STATUSES = {pending:'В очереди',opening:'Открывается',filling:'Заполняется',saving:'Сохраняется',verifying:'Проверяется',done:'Выполнено',review:'Проверить',error:'Ошибка',skipped:'Пропущено'};
   const ACTIVE = new Set(['opening','filling','saving','verifying']);
@@ -673,20 +681,59 @@
     $('total').textContent=state.rows.length;$('done').textContent=count(['done']);$('pending').textContent=count(['pending',...ACTIVE]);$('failed').textContent=count(['error','review']);
     $('bar').style.width=(state.rows.length?100*count(['done','skipped'])/state.rows.length:0)+'%';
     const current=state.rows[state.index];
-    $('current').textContent=working?(halted?'Остановка после текущей операции':`${STATUSES[current?.status]||'Работа'} · ${current?.name||current?.id||''}`):
+    $('current').textContent=(working||state.running)?(halted?'Остановка после текущей операции':`${STATUSES[current?.status]||'Работа'} · ${current?.name||current?.id||''}`):
       state.paused?'На паузе — нажмите Продолжить':state.rows.length?`${state.filename} · ${SITE}`:'Загрузите Excel с товарами';
     const hasWork=state.rows.some(x=>x.status==='pending'||ACTIVE.has(x.status));
-    $('start').disabled=working||!hasWork;$('one').disabled=working||!hasWork;$('stop').disabled=!working;$('pause').disabled=!working||halted;
+    const isActive=working||!!state.running;
+    $('start').disabled=isActive||!hasWork;$('one').disabled=isActive||!hasWork;$('stop').disabled=!isActive;$('pause').disabled=!isActive||halted;
     $('start').textContent=state.paused||state.rows.some(x=>ACTIVE.has(x.status))?'▶ Продолжить':'▶ Начать';
     $('retry').disabled=working||!state.rows.some(x=>x.status==='error'&&!x.invalid);
-    $('load').disabled=working;$('reset').disabled=working;
-    $('delay').disabled=working;$('stopOnError').disabled=working;
+    $('load').disabled=isActive;$('reset').disabled=isActive;
+    $('delay').disabled=isActive;$('stopOnError').disabled=isActive;
     $('delay').value=state.settings.delay;$('stopOnError').checked=!!state.settings.stopOnError;
     $('updated').textContent=state.updated?`Сохранено ${new Date(state.updated).toLocaleTimeString()} · ${SITE}`:`Очередь хранится отдельно для ${SITE}`;
     root.querySelector('[data-tab="processed"]').textContent=`Обработанные (${count(['done','review'])})`;
     if(['queue','processed'].includes(tab))renderRows();if(tab==='log')renderLog();
   }
+
+  function selectModule(name){
+    const chosen=name==='dates'?'dates':'courses';
+    if(!root)return;
+    $('course-content').classList.toggle('hidden',chosen!=='courses');
+    $('date-content').classList.toggle('hidden',chosen!=='dates');
+    root.querySelectorAll('[data-module]').forEach(b=>b.classList.toggle('active',b.dataset.module===chosen));
+    GM_setValue(MODE_KEY,chosen);
+  }
+  function openDashboard(){
+    const url=ORIGIN+'/wp-admin/edit.php?post_type=product&smm_manager=dashboard';
+    const w=window.open(url,'smm-manager-dashboard-'+SITE);
+    if(!w)notice('Браузер заблокировал новую вкладку. Разрешите всплывающие окна для сайта.');
+  }
+  function launchCourse(oneOnly){
+    if(working){notice('Редактор курсов уже выполняет задачу.');return;}
+    const fresh=GM_getValue(KEY,empty());
+    const lease=GM_getValue(LEASE,null);
+    if(lease&&lease.expires>Date.now()){notice('Очередь курсов уже запущена в другой вкладке.');return;}
+    const row=fresh.rows.find(r=>r.status==='pending'||ACTIVE.has(r.status));
+    if(!row){notice('Нет курсов в очереди. Импортируйте Excel.');return;}
+    const url=new URL(productURL(row.id));
+    url.searchParams.set('smm_manager','course-worker');
+    url.searchParams.set('smm_one',oneOnly?'1':'0');
+    const w=window.open(url.href,'smm-manager-courses-'+SITE);
+    if(!w)notice('Браузер заблокировал рабочую вкладку. Разрешите всплывающие окна.');
+  }
+  function stopCourseFromPanel(pause){
+    if(working){stop(pause);return;}
+    if(!GM_getValue(KEY,empty()).running){notice('Очередь курсов сейчас не выполняется.');return;}
+    GM_setValue(COMMAND,{kind:pause?'pause':'stop',at:Date.now(),id:uid()});
+  }
   const css=`
+    .module-nav{display:flex;gap:8px;padding:9px 14px;background:#eef3fb;border-bottom:1px solid #d6e1ef;align-items:center}
+    .module-nav button{font-size:12px;padding:8px 12px;background:#fff}
+    .module-nav button.active{background:#2e64ce;color:#fff;border-color:#2e64ce}
+    .module-nav .spacer{flex:1}
+    .panel.dashboard{inset:0!important;top:0!important;right:0!important;bottom:0!important;left:0!important;width:100vw!important;height:100vh!important;max-height:none!important;max-width:none!important;border-radius:0!important;resize:none!important}
+
     :host{all:initial;font:13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#182438;color-scheme:light}
     *{box-sizing:border-box}button,input,select{font:inherit}button{background:#fff;color:#26354c;border:1px solid #d9e1eb;border-radius:9px;padding:8px 12px;cursor:pointer;font-weight:600}button:hover{background:#edf3fa;color:#182438}button:disabled{opacity:.44;cursor:default}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #4374e9;outline-offset:2px}
     .panel{position:fixed;right:18px;bottom:18px;width:760px;height:680px;max-width:calc(100vw - 24px);max-height:calc(100vh - 36px);display:flex;flex-direction:column;border-radius:16px;box-shadow:0 18px 75px #12243a55;background:white;border:1px solid #d6dfed;overflow:hidden;resize:both}
@@ -704,13 +751,701 @@
     .wc-error{position:absolute;bottom:52px;left:15px;right:15px;z-index:9;background:#fff1ef;border:1px solid #f0c1b8;color:#9f3e34;padding:12px;border-radius:10px;box-shadow:0 8px 25px #0002}.wc-error button{float:right;padding:1px 6px}.wc-detail{position:absolute;inset:60px 12px 12px;z-index:6;background:#fff;border:1px solid #d4e0ef;box-shadow:0 10px 35px #0003;border-radius:12px;padding:15px;overflow:auto}.wc-detail header{display:flex;justify-content:space-between}.wc-detail pre{white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.5 monospace;background:#f6f8fc;padding:10px;border-radius:8px}.wc-detail a{color:#2863da}.wc-detail .actions{padding:0}
     @media(max-width:540px){.panel{right:7px;bottom:7px;width:calc(100vw - 14px);height:min(650px,calc(100vh - 14px))}.stats{gap:4px}.stat{padding:6px}.actions button{font-size:11px;padding:6px}.tabs{gap:11px}}
   `;
+function initializeDateManager(root, context) {
+  'use strict';
+  const { SITE, ORIGIN } = context;
+  if (window.__SMM_MANAGER_DATES__) return;
+  window.__SMM_MANAGER_DATES__ = true;
+  const params = new URLSearchParams(location.search);
+  const DATE_WORKER_SESSION = 'smm.manager.date.worker.' + SITE;
+  if (params.get('smm_manager') === 'date-worker') sessionStorage.setItem(DATE_WORKER_SESSION, '1');
+  const IS_DATE_WORKER = sessionStorage.getItem(DATE_WORKER_SESSION) === '1';
+  const workerURL = ORIGIN + '/wp-admin/edit.php?post_type=product&smm_manager=date-worker';
+  const workerName = 'smm-manager-dates-' + SITE;
+
+  const STORAGE = 'bwo.smm.dates.v2.' + SITE;
+  const LEGACY_STORAGE = 'smmmaster_dates_v1_state';
+  const DEFAULT_DATE_TO = new Date().toISOString().slice(0,10);
+  const DEFAULT_DATE_FROM = DEFAULT_DATE_TO.slice(0,4) + '-01-01';
+  const MAX_STORED_LOG = 60;
+  const $ = (sel, scope = root) => scope.querySelector(sel);
+  const $$ = (sel, scope = document) => Array.from(scope.querySelectorAll(sel));
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  let busy = false;
+  let rowsFromFile = [];
+  let activeFileName = '';
+  let activeSheet = '';
+
+  const emptyState = () => ({
+    ids: [], index: 0, status: 'idle', phase: 'search',
+    records: [], notes: [], lastMessage: 'Загрузите файл с ID',
+    batchRemaining: null, dateCandidate: null, source: '',
+    missStreak: 0, delayMs: 350, fastMode: true, dryRun: false,
+    dateFrom: DEFAULT_DATE_FROM, dateTo: DEFAULT_DATE_TO,
+    lastChanged: Date.now()
+  });
+  let state;
+  let initial = GM_getValue(STORAGE, null);
+  if (!initial && SITE === 'smmmaster.net') {
+    try {
+      const legacy = JSON.parse(localStorage.getItem(LEGACY_STORAGE) || 'null');
+      if (legacy && Array.isArray(legacy.ids)) {
+        initial = { ...legacy, status:'paused', phase: legacy.phase === 'saving' ? 'saving' : 'search' };
+        GM_setValue(STORAGE, initial);
+      }
+    } catch (e) { console.warn('[SMM dates] Migration skipped:',e); }
+  }
+  state = { ...emptyState(), ...(initial && typeof initial === 'object' ? initial : {}) };
+  if (!initial) GM_setValue(STORAGE, state);
+  if (!Array.isArray(state.ids)) state.ids = [];
+  if (!Array.isArray(state.records)) state.records = [];
+  if (!Array.isArray(state.notes)) state.notes = [];
+
+  const save = () => {
+    state.lastChanged = Date.now();
+    try { GM_setValue(STORAGE, state); }
+    catch (e) { console.error('[SMM] Не удалось сохранить очередь:', e); }
+  };
+  const count = (status) => state.records.filter(r => r.status === status).length;
+  const pct = () => state.ids.length ? Math.round(100 * state.index / state.ids.length) : 0;
+  const setMessage = (msg) => { state.lastMessage = msg; save(); draw(); };
+  const log = (msg, severity = 'info') => {
+    const hhmmss = new Date().toLocaleTimeString('ru-RU');
+    state.notes.unshift({ time: hhmmss, msg, severity });
+    state.notes.length = Math.min(state.notes.length, MAX_STORED_LOG);
+    state.lastMessage = msg;
+    save(); draw();
+  };
+  function statusLine(msg, severity = 'info') {
+    console[severity === 'error' ? 'error' : 'log']('[SMM]', msg);
+    if ($('#smm-date-tool')) log(msg, severity);
+  }
+  const pad = v => String(v).padStart(2, '0');
+  const isMidnight = date => date?.hh === '00' && date?.mn === '00';
+  function parseDateBoundary(value) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    const [year, month, day] = value.split('-').map(Number);
+    const ms = Date.UTC(year, month - 1, day);
+    const d = new Date(ms);
+    if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) return null;
+    return ms;
+  }
+  function dateRange(from = state.dateFrom, to = state.dateTo) {
+    const start = parseDateBoundary(from), end = parseDateBoundary(to);
+    if (start === null || end === null || start > end) return null;
+    return { start, end: end + 86400000 - 1000 };
+  }
+  const dateLabel = value => value.split('-').reverse().join('.');
+  const randomDate = () => {
+    const range = dateRange();
+    if (!range) throw new Error('Некорректный диапазон дат. Укажите начало и конец периода.');
+    let vals;
+    do {
+      const n = Math.floor(range.start / 1000) + Math.floor(Math.random() * (Math.floor(range.end / 1000) - Math.floor(range.start / 1000) + 1));
+      const d = new Date(n * 1000);
+      vals = { aa: String(d.getUTCFullYear()), mm: pad(d.getUTCMonth()+1), jj: pad(d.getUTCDate()),
+        hh: pad(d.getUTCHours()), mn: pad(d.getUTCMinutes()), ss: pad(d.getUTCSeconds()) };
+    } while (isMidnight(vals)); // Никогда не выставлять 00:00 (даже 00:00:59)
+    vals.text = `${vals.aa}-${vals.mm}-${vals.jj} ${vals.hh}:${vals.mn}:${vals.ss}`;
+    return vals;
+  };
+  const unique = ids => [...new Set(ids.map(x => String(x).trim()).filter(x => /^\d{1,12}$/.test(x)))];
+  function toId(raw) {
+    const s = String(raw ?? '').trim();
+    if (/^\d{1,12}$/.test(s)) return s;
+    let m = s.match(/^(\d{4,12})\s+\S/); // 204665 Crab God
+    if (m) return m[1];
+    m = s.match(/(?:^|\s)(\d{4,12})\s*$/); // Crab God 204665
+    return m ? m[1] : '';
+  }
+  function chooseBestColumn(rows) {
+    const head = (rows[0] || []).map(x => String(x ?? '').trim().toLowerCase());
+    const exact = head.findIndex(x => /^(id|id товара|product\s*id|ид|айди|идентификатор)$/.test(x));
+    if (exact >= 0) return exact;
+    let best = 0, top = -1;
+    for (let c = 0; c < Math.min(30, Math.max(...rows.slice(0, 10).map(r => r.length), 1)); c++) {
+      const vals = rows.slice(0, 300).map(r => r[c]);
+      const n = vals.filter(v => /^\d{4,12}$/.test(String(v ?? '').trim())).length;
+      if (n > top) { top = n; best = c; }
+    }
+    return best;
+  }
+  function idsFromColumn(rows, c) {
+    const result = [];
+    for (const row of rows) {
+      if (!row || c >= row.length) continue;
+      const id = toId(row[c]);
+      if (id) result.push(id);
+    }
+    return unique(result);
+  }
+
+  const style = document.createElement('style');
+  style.textContent = `
+  #smm-date-tool, #smm-date-tool *{box-sizing:border-box}
+  #smm-date-tool{--bg:#10192b;--panel:#18243a;--line:#30415b;--txt:#edf4ff;--muted:#9fb0cb;--blue:#4e9dff;--green:#60d6a9;--red:#ff7b83;--yellow:#ffc869;position:fixed;z-index:2147483600;top:78px;right:22px;width:420px;min-width:340px;min-height:115px;max-width:96vw;max-height:92vh;resize:both;overflow:hidden;border:1px solid #47617c;border-radius:16px;background:var(--bg);box-shadow:0 16px 45px #0a152bc4;color:var(--txt);font:13px/1.45 system-ui,-apple-system,'Segoe UI',Arial,sans-serif;direction:ltr}
+  #smm-date-tool .head{padding:13px 15px;background:linear-gradient(110deg,#263c5e,#16253e);border-bottom:1px solid #34506e;display:flex;align-items:center;gap:11px;cursor:move;user-select:none;touch-action:none}
+  #smm-date-tool .badge{height:32px;width:32px;border-radius:10px;display:grid;place-items:center;background:#3476e244;color:white;font-size:19px}
+  #smm-date-tool .head strong{font-size:14px;color:#fff;display:block}
+  #smm-date-tool .head small{color:#b3c6e5;display:block;font-size:11px}
+  #smm-date-tool .head .spacer{flex:1}
+  #smm-date-tool button{font:inherit;color:var(--txt);cursor:pointer;border:1px solid #3e5575;background:#243653;border-radius:9px;padding:8px 10px;transition:filter .12s}
+  #smm-date-tool button:hover{filter:brightness(1.22)}
+  #smm-date-tool button:disabled{opacity:.4;cursor:not-allowed}
+  #smm-date-tool .iconbtn{padding:4px 8px;font-size:17px;background:#253c59}
+  #smm-date-tool .main{padding:14px;overflow:auto;max-height:calc(92vh - 61px);height:calc(100% - 59px);min-height:240px}
+  #smm-date-tool.collapsed{height:59px!important;min-height:59px!important;resize:none}
+  #smm-date-tool.collapsed .main{display:none}
+  #smm-date-tool label.caption{display:block;color:#aabdda;font-size:11px;text-transform:uppercase;letter-spacing:.6px;font-weight:700;margin:12px 0 6px}
+  #smm-date-tool textarea,#smm-date-tool input[type=number],#smm-date-tool input[type=date],#smm-date-tool select{width:100%;background:#121d30;border:1px solid #3a506e;border-radius:9px;color:white;padding:9px;font:inherit}
+  #smm-date-tool textarea{height:65px;min-height:50px;resize:vertical}
+  #smm-date-tool input[type=date]{min-width:0;color-scheme:dark}
+  #smm-date-tool .date-range{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}
+  #smm-date-tool .date-range label{display:block;color:var(--muted);font-size:11px}
+  #smm-date-tool input[type=file]{position:absolute;left:-10000px;width:1px;height:1px}
+  #smm-date-tool .row{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+  #smm-date-tool .row>*{flex:1 1 auto}
+  #smm-date-tool .primary{background:#3479eb;border-color:#3479eb;color:#fff;font-weight:700}
+  #smm-date-tool .green{background:#167454;border-color:#26896a;color:#fff}
+  #smm-date-tool .warn{background:#694524;border-color:#947046;color:#ffe9c7}
+  #smm-date-tool .danger{background:#4b2936;border-color:#754353;color:#ffbec8}
+  #smm-date-tool .mini{font-size:11px;padding:5px 8px}
+  #smm-date-tool .sub{color:var(--muted);font-size:11px;margin-top:6px}
+  #smm-date-tool .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:11px 0}
+  #smm-date-tool .stat{background:#19283f;border:1px solid #2f415a;border-radius:10px;padding:8px 3px;text-align:center}
+  #smm-date-tool .stat strong{display:block;font-size:17px;font-variant-numeric:tabular-nums}
+  #smm-date-tool .stat span{font-size:10px;color:var(--muted)}
+  #smm-date-tool .bar{height:8px;background:#0b1322;border-radius:9px;overflow:hidden;border:1px solid #2c3a54}
+  #smm-date-tool .fill{height:100%;background:linear-gradient(90deg,#2c75e9,#68bcf8);width:0%;transition:width .2s}
+  #smm-date-tool .pills{display:flex;gap:6px;align-items:center;justify-content:space-between;font-size:11px;color:var(--muted)}
+  #smm-date-tool .state{border-radius:8px;padding:8px 10px;border:1px solid #304463;background:#14243b;color:#d6e6ff;min-height:35px;margin:10px 0;overflow-wrap:anywhere}
+  #smm-date-tool .options{display:flex;align-items:center;gap:8px;font-size:12px;color:#b5c6df}
+  #smm-date-tool input[type=checkbox]{accent-color:#62b0ff}
+  #smm-date-tool .log{margin-top:6px;height:145px;overflow:auto;padding:8px;border-radius:9px;background:#090f1b;border:1px solid #2a3c54;font-size:11px;line-height:1.6}
+  #smm-date-tool .log div{border-bottom:1px dotted #203248;padding:3px 0;overflow-wrap:anywhere}
+  #smm-date-tool .log .error{color:#ff9b99}
+  #smm-date-tool .log .ok{color:#89e0ba}
+  #smm-date-tool .log .info{color:#b4c8e2}
+  #smm-date-tool hr{border:0;border-top:1px solid #2f425b;margin:13px 0}
+  #smm-date-tool details{border:1px solid #2c3f58;border-radius:9px;padding:8px;margin:10px 0}
+  #smm-date-tool summary{cursor:pointer;color:#c2d2eb}
+  #smm-date-tool{position:static;inset:auto;width:100%;min-width:0;min-height:0;max-width:none;max-height:none;height:100%;resize:none;border:0;border-radius:0;box-shadow:none;background:#fff;color:#1f314c;font:13px/1.5 system-ui,sans-serif}
+  #smm-date-tool .head{display:none}
+  #smm-date-tool .main{height:100%;min-height:0;max-height:none;padding:0 15px 15px;overflow:auto}
+  #smm-date-tool .date-nav{padding:0;margin:0 0 10px;border-bottom:1px solid #e5eafa}
+  #smm-date-tool .date-nav button{background:none;border:0;border-bottom:2px solid transparent;color:#53687f;padding:10px}
+  #smm-date-tool .date-nav button.active{border-bottom-color:#346cdf;color:#245fc6}
+  #smm-date-tool .stat{background:#f7f9fd;border-color:#dde5f1}
+  #smm-date-tool .stat strong{color:#1e3b66}
+  #smm-date-tool .stat span,#smm-date-tool .pills,#smm-date-tool .sub,#smm-date-tool label.caption{color:#657a93}
+  #smm-date-tool button{background:#fff;color:#304563;border-color:#d3deeb}
+  #smm-date-tool button.primary{background:#346cdf;color:#fff;border-color:#346cdf}
+  #smm-date-tool button.green{background:#16835a;color:#fff}
+  #smm-date-tool button.danger{background:#fff1ef;color:#9a3c33}
+  #smm-date-tool button.warn{background:#fff4e3;color:#7e5321}
+  #smm-date-tool textarea,#smm-date-tool input[type=number],#smm-date-tool input[type=date],#smm-date-tool select{background:#fff;border-color:#d4deec;color:#243951;color-scheme:light}
+  #smm-date-tool .state{color:#344f6e;background:#f5f8fe;border-color:#d5e1f1}
+  #smm-date-tool .log{background:#f5f8fe;border-color:#d5e1f1}
+  #smm-date-tool .log .info{color:#526b88} #smm-date-tool .log .ok{color:#147d50} #smm-date-tool .log .error{color:#a63e30}
+  #smm-date-tool .options{color:#4c6380} #smm-date-tool summary{color:#3b6097}
+  #smm-date-processed{padding:8px 0;overflow-x:auto} #smm-date-processed table{width:100%}
+  #smm-date-help{padding:8px 0;color:#475d76;line-height:1.7} #smm-date-help li{margin:7px 0}
+  `;
+  root.append(style);
+
+  const panel = document.createElement('section');
+  panel.id = 'smm-date-tool';
+  panel.innerHTML = `
+    <div class="head" id="smm-grip">
+      <div class="badge">◷</div>
+      <div><strong>Редактор дат товаров</strong><small>${SITE} · Quick Edit · v1.1.0</small></div>
+      <div class="spacer"></div><button class="iconbtn" id="smm-collapse" title="Свернуть/развернуть" type="button">−</button>
+    </div>
+    <div class="main">
+      <nav class="tabs date-nav"><button data-dtab="work" class="active">Редактор дат</button><button data-dtab="processed">Обработанные</button><button data-dtab="help">Как работать</button></nav>
+      <div id="smm-date-work">
+      <div class="row"><button id="smm-import" type="button" class="primary">⬆ Загрузить Excel / CSV / TXT</button><input id="smm-file" type="file" accept=".xlsx,.xls,.csv,.tsv,.txt" /></div>
+      <div id="smm-file-info" class="sub">Данные сохраняются в этом браузере между перезагрузками.</div>
+      <div id="smm-column-wrap" style="display:none"><label class="caption">Столбец с ID</label><select id="smm-column"></select><button id="smm-accept-column" class="mini green" type="button" style="margin-top:7px">Применить этот столбец</button></div>
+      <details><summary>Или вставить ID текстом</summary><textarea id="smm-paste" placeholder="285067\n204665\n278600"></textarea><button id="smm-add-pasted" class="mini" type="button">Загрузить ID из поля</button></details>
+      <div class="stats"><div class="stat"><strong id="smm-total">0</strong><span>Всего ID</span></div><div class="stat"><strong id="smm-ok">0</strong><span>Готово</span></div><div class="stat"><strong id="smm-missing">0</strong><span>Не найдены</span></div><div class="stat"><strong id="smm-error">0</strong><span>Ошибки</span></div></div>
+      <div class="pills"><span id="smm-progress-label">0 / 0</span><span id="smm-progress-pct">0%</span></div><div class="bar"><div class="fill" id="smm-fill"></div></div>
+      <div class="state" id="smm-state">Загрузите ID для начала</div>
+      <label class="caption">Диапазон случайных дат (включительно)</label>
+      <div class="date-range"><label>От<input id="smm-date-from" type="date" /></label><label>До<input id="smm-date-to" type="date" /></label></div>
+      <div id="smm-date-range-info" class="sub"></div>
+      <div class="options"><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" id="smm-dry" /> Проверка поиска без изменения дат</label></div>
+      <div class="row" style="margin-top:10px"><button id="smm-test" class="warn" type="button">Тест: 3 ID</button><button id="smm-start" class="primary" type="button">▶ Старт / продолжить</button><button id="smm-pause" type="button">Ⅱ Пауза</button></div>
+      <div class="row" style="margin-top:7px"><button id="smm-report" type="button" class="green">↓ Отчет XLSX</button><button id="smm-missing-csv" type="button">↓ Нет ID (CSV)</button><button id="smm-reset" type="button" class="danger">↺ Сброс</button></div>
+      <label class="caption">История операций</label><div class="log" id="smm-log" aria-live="polite"></div>
+      <div class="options" style="margin-top:9px"><label>Пауза между ID (мс) <input id="smm-delay" type="number" min="200" max="15000" step="50" style="width:100px" /></label></div>
+      <div class="options"><label><input id="smm-fast" type="checkbox" /> Ускоренный поиск без полной загрузки страницы (с автоматическим резервным режимом)</label></div>
+      <div class="sub">Случайная дата внутри диапазона; 00:00 исключено. При 5 последовательных отсутствующих ID — автопауза. Отключите старую отдельную версию редактора дат.</div>
+      </div>
+      <div id="smm-date-processed" class="hidden"><h3>Обработанные товары</h3><div id="smm-result-table"></div></div>
+      <div id="smm-date-help" class="hidden"><h3>Как работать с редактором дат</h3>
+        <ol><li>Выберите «2. Редактор дат» на нужном сайте.</li>
+        <li>Импортируйте Excel, CSV, TXT с ID товаров или вставьте ID вручную. Выберите колонку при импорте.</li>
+        <li>Задайте диапазон дат: обе границы включены, время 00:00 исключено.</li>
+        <li>Начните с «Тест: 3 ID». Режим «Проверка поиска» не меняет товары.</li>
+        <li>Нажмите «Старт». Задания выполняются в отдельной рабочей вкладке, исходная панель остаётся на месте.</li>
+        <li>Пауза запрещает переход к следующему товару, но не отменяет уже отправленный Update.</li>
+        <li>Выгрузите XLSX-отчёт или CSV ненайденных ID.</li></ol>
+        <p>Изменения выполняются через стандартный WordPress Quick Edit. При ускоренном поиске скрипт получает HTML-строку товара без загрузки изображений/скриптов всей страницы. Если этот способ не сработал, используется обычный поиск. При неопределённом ответе Update скрипт останавливается.</p>
+      </div>
+    </div>`;
+  root.querySelector('#date-content').append(panel);
+
+  // Separate module UI uses the shared manager window.
+  const dateTabs = panel.querySelectorAll('[data-dtab]');
+  const switchDateTab = (target) => {
+    for (const t of ['work','processed','help']) $('#smm-date-' + t).classList.toggle('hidden',t !== target);
+    dateTabs.forEach(b => b.classList.toggle('active',b.dataset.dtab === target));
+    if (target === 'processed') draw();
+  };
+  dateTabs.forEach(b => b.addEventListener('click',() => switchDateTab(b.dataset.dtab)));
+  GM_addValueChangeListener(STORAGE, (key, previous, value, remote) => {
+    if (!remote || !value || typeof value !== 'object') return;
+    state = { ...emptyState(), ...value };
+    draw();
+  });
+
+  function draw() {
+    if (!panel.isConnected) return;
+    $('#smm-total').textContent = state.ids.length;
+    $('#smm-ok').textContent = count('updated') + count('found');
+    $('#smm-missing').textContent = count('missing');
+    $('#smm-error').textContent = count('error');
+    $('#smm-progress-label').textContent = `${state.index} / ${state.ids.length}`;
+    $('#smm-progress-pct').textContent = `${pct()}%`;
+    $('#smm-fill').style.width = `${pct()}%`;
+    const m = {running:'● Работает',paused:'Ⅱ Пауза',idle:'Ожидание',done:'✓ Завершено'}[state.status] || state.status;
+    const current = state.ids[state.index];
+    $('#smm-state').textContent = `${m}${current ? ' · ID ' + current : ''}\n${state.lastMessage}`;
+    $('#smm-dry').checked = !!state.dryRun;
+    $('#smm-dry').disabled = state.status === 'running';
+    $('#smm-delay').value = String(state.delayMs);
+    $('#smm-delay').disabled = state.status === 'running';
+    $('#smm-fast').checked = !!state.fastMode;
+    $('#smm-fast').disabled = state.status === 'running';
+    const resultTable = $('#smm-result-table');
+    if (resultTable) {
+      const e = val => String(val??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+      resultTable.innerHTML = state.records.length ? '<table><thead><tr><th>ID</th><th>Статус</th><th>Дата</th><th>Информация</th></tr></thead><tbody>' +
+        state.records.slice(-150).reverse().map(r=>'<tr><td>'+e(r.id)+'</td><td>'+e(r.status)+'</td><td>'+e(r.date)+'</td><td>'+e(r.detail)+'</td></tr>').join('')+'</tbody></table>' : '<p>Обработанных записей пока нет.</p>';
+    }
+    const rangeLocked = state.status === 'running';
+    $('#smm-date-from').disabled = rangeLocked;
+    $('#smm-date-to').disabled = rangeLocked;
+    const range = dateRange();
+    $('#smm-date-range-info').textContent = range
+      ? `Период: ${dateLabel(state.dateFrom)} — ${dateLabel(state.dateTo)} · обе даты включены`
+      : 'Ошибка: начальная дата не должна быть позже конечной.';
+    $('#smm-pause').disabled = state.status !== 'running';
+    $('#smm-test').disabled = !state.ids.length || state.status === 'running';
+    $('#smm-start').disabled = !state.ids.length || state.status === 'running' || state.index >= state.ids.length;
+    $('#smm-log').replaceChildren(...state.notes.slice(0, 35).map(n => {
+      const item = document.createElement('div');
+      item.className = n.severity;
+      item.textContent = `[${n.time}] ${n.msg}`;
+      return item;
+    }));
+    if (state.source) $('#smm-file-info').textContent = `${state.source} · ${state.ids.length} уникальных ID`;
+  }
+
+  function storeImported(ids, source) {
+    if (state.status === 'running') { log('Сначала поставьте скрипт на паузу, затем заменяйте список ID', 'error'); return; }
+    ids = unique(ids);
+    if (!ids.length) { log('Не удалось найти числовые ID в выбранном столбце', 'error'); return; }
+    if (state.records.length && !confirm('Заменить текущий список и сбросить историю? Перед заменой скачайте отчет, если он нужен.')) return;
+    const { dateFrom, dateTo } = state;
+    state = { ...emptyState(), dateFrom, dateTo };
+    state.ids = ids;
+    state.source = source;
+    state.lastMessage = `Загружено ${ids.length} уникальных ID. Нажмите «Тест: 3 ID» или «Старт».`;
+    save(); draw();
+    log(`Загружен список: ${source}. ID: ${ids.length}`);
+  }
+  function showColumnPicker(rows, name, sheet) {
+    rowsFromFile = rows;
+    activeFileName = name;
+    activeSheet = sheet;
+    const max = Math.min(30, Math.max(...rows.slice(0, 100).map(r => r.length), 1));
+    const sel = $('#smm-column');
+    sel.replaceChildren();
+    for (let i=0;i<max;i++) {
+      const opt = document.createElement('option');
+      const examples = rows.slice(0, 25).map(r => String(r[i] ?? '').trim()).filter(Boolean).slice(0, 3).join(' · ');
+      opt.value = String(i);
+      opt.textContent = `Столбец ${i+1} (${String.fromCharCode(65+i)}) — ${examples.slice(0, 80)}`;
+      sel.append(opt);
+    }
+    sel.value = String(chooseBestColumn(rows));
+    $('#smm-column-wrap').style.display = '';
+    $('#smm-file-info').textContent = `${name} · лист: ${sheet}. Выберите столбец с ID.`;
+    log(`Файл ${name} прочитан: ${rows.length} строк; выбран столбец ${Number(sel.value)+1}`);
+  }
+  async function onFileChange(file) {
+    if (!file) return;
+    try {
+      let rows, sheetName = 'Текст';
+      if (/\.(xlsx|xls|csv|tsv)$/i.test(file.name) && typeof XLSX !== 'undefined') {
+        const bytes = await file.arrayBuffer();
+        const wb = XLSX.read(bytes, {type:'array'});
+        sheetName = wb.SheetNames[0];
+        rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], {header:1, raw:false, defval:''});
+      } else if (/\.(xlsx|xls)$/i.test(file.name)) {
+        throw new Error('Библиотека Excel не загрузилась. Проверьте интернет или сохраните файл как CSV.');
+      } else {
+        const txt = await file.text();
+        rows = txt.split(/\r?\n/).map(s => s.split(/[;,\t]/));
+      }
+      showColumnPicker(rows, file.name, sheetName);
+    } catch (e) { log('Ошибка чтения файла: ' + e.message, 'error'); }
+  }
+
+  function finish(status, detail = '', date = '') {
+    const id = state.ids[state.index];
+    if (!id) return;
+    state.records.push({id, status, date, detail});
+    state.index++;
+    state.phase = 'search';
+    state.dateCandidate = null;
+    if (status === 'missing') state.missStreak++;
+    else state.missStreak = 0;
+    if (state.batchRemaining != null) state.batchRemaining--;
+    const symbols = {updated:'✓',found:'✓',missing:'?',error:'!'};
+    log(`${symbols[status]} ID ${id}: ${detail || status}${date ? ' · ' + date : ''}`, status === 'error' || status === 'missing' ? 'error' : 'ok');
+    if (state.index >= state.ids.length) {
+      state.status = 'done'; state.lastMessage = `Обработаны все ${state.ids.length} ID.`;
+      log('Очередь завершена. Можно выгрузить отчет.', 'ok');
+    } else if (state.batchRemaining === 0) {
+      state.status = 'paused'; state.lastMessage = 'Тестовая партия завершена. Проверьте результат перед продолжением.';
+      log('Пауза после тестовых ID');
+    } else if (state.missStreak >= 5) {
+      state.status = 'paused'; state.lastMessage = 'Пять ID подряд не найдены. Проверьте, поддерживает ли поиск WordPress поиск по ID.';
+      log('Автопауза: 5 последовательных ненайденных ID', 'error');
+    }
+    save(); draw();
+  }
+
+  async function waitFor(getResult, timeoutMs, every = 100) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const val = getResult();
+      if (val) return val;
+      await sleep(every);
+    }
+    throw new Error('Превышено время ожидания ответа страницы');
+  }
+  function setInputValue(el, val) {
+    if (!el) throw new Error('Не найдено поле даты');
+    el.value = val;
+    el.dispatchEvent(new Event('input', {bubbles:true}));
+    el.dispatchEvent(new Event('change', {bubbles:true}));
+  }
+  function ensureEditorDate(editor, date) {
+    const fieldset = $('fieldset.inline-edit-date', editor);
+    if (!fieldset) throw new Error('В Quick Edit нет поля даты');
+    for (const f of ['mm','jj','aa','hh','mn']) setInputValue($(`[name="${f}"]`, fieldset), date[f]);
+    const sec = $('[name="ss"]', fieldset) || $('[name="ss"]', editor);
+    if (sec) setInputValue(sec, date.ss);
+    // WordPress itself includes edit_date=true in its AJAX Quick Edit request.
+  }
+  function verifyPostDate(id, expected) {
+    const holder = document.getElementById('inline_' + id);
+    if (!holder) return null;
+    const read = f => $(`.${f}`, holder)?.textContent.trim() || null;
+    const vals = Object.fromEntries(['aa','mm','jj','hh','mn'].map(k => [k, read(k)]));
+    if (Object.values(vals).some(v => v == null)) return null;
+    return ['aa','mm','jj','hh','mn'].every(k => Number(vals[k]) === Number(expected[k]));
+  }
+  async function processFound(id, row) {
+    if (state.dryRun) { finish('found', 'найден, дата не менялась'); return; }
+    const editLink = $('.row-actions .editinline', row) || $('.editinline', row);
+    if (!editLink) { finish('error', 'у товара нет кнопки Quick Edit'); return; }
+    const activeEditor = document.getElementById('edit-' + id);
+    if (activeEditor) $('.cancel', activeEditor)?.click();
+    state.phase = 'editing'; save();
+    editLink.click();
+    const editor = await waitFor(() => document.getElementById('edit-' + id), 6000);
+    if (state.status !== 'running') { log('Пауза до нажатия Update'); return; }
+    // Проверяем также дату, сохранённую предыдущей версией скрипта.
+    const date = state.dateCandidate && !isMidnight(state.dateCandidate) ? state.dateCandidate : randomDate();
+    state.dateCandidate = date;
+    ensureEditorDate(editor, date);
+    save(); draw();
+    await sleep(220);
+    if (state.status !== 'running') { log('Пауза до нажатия Update'); return; }
+    const saveButton = $('.inline-edit-save .button-primary.save', editor) || $('button.save', editor);
+    if (!saveButton) throw new Error('Не найдена кнопка Update в Quick Edit');
+    // Mark pending BEFORE submitting. A reload during AJAX will auto-pause rather than silently re-submit.
+    state.phase = 'saving'; save();
+    saveButton.click();
+    const response = await waitFor(() => {
+      const currentEditor = document.getElementById('edit-' + id);
+      if (!currentEditor) {
+        const updatedRow = document.getElementById('post-' + id);
+        return updatedRow ? {type:'ok'} : {type:'error',msg:'Редактор закрылся, но строка товара не появилась'};
+      }
+      const visibleError = $('.notice-error:not(.hidden) .error, .notice-error:not(.hidden) p.error', currentEditor);
+      if (visibleError && visibleError.textContent.trim()) return {type:'error',msg:visibleError.textContent.trim()};
+      return null;
+    }, 35000, 170);
+    if (response.type === 'error') {
+      state.phase = 'search'; save();
+      finish('error', 'Update: ' + response.msg, date.text);
+      return;
+    }
+    const verified = verifyPostDate(id, date);
+    if (verified === false) {
+      state.status = 'paused'; state.phase = 'saving';
+      log(`ID ${id}: ответ Update получен, но дата в таблице отличается. Проверьте товар вручную; автоматизация остановлена.`, 'error');
+      save(); return;
+    }
+    finish('updated', verified === true ? 'дата сохранена и проверена' : 'Update подтвержден WordPress', date.text);
+  }
+  async function searchId(id) {
+    const field = document.getElementById('post-search-input');
+    const submit = document.getElementById('search-submit');
+    if (!field || !submit) throw new Error('Не найдена строка поиска #post-search-input / #search-submit');
+    // WordPress keeps a hidden Quick Edit template inside the GET form.
+    // Disable its controls so post_title, prices and nonce do not leak into search URLs.
+    $('#inline-edit input, #inline-edit select, #inline-edit textarea, #bulk-edit input, #bulk-edit select, #bulk-edit textarea', document).forEach(el => {el.disabled = true;});
+    // Remove previous query. The search form navigates to the server's result page.
+    setInputValue(field, '');
+    setInputValue(field, id);
+    state.phase = 'search'; save();
+    log(`Поиск ID ${id} (${state.index + 1} из ${state.ids.length})`);
+    submit.click();
+    // If a plugin prevents the search form from navigating, do not silently stall.
+    setTimeout(() => {
+      if (state.status === 'running' && state.ids[state.index] === id &&
+          (new URLSearchParams(location.search).get('s') || '') !== id) {
+        state.status = 'paused';
+        log(`Поиск ID ${id}: форма не перешла на страницу результатов. Проверьте форму Search products.`, 'error');
+      }
+    }, 8000);
+  }
+  // Fast path: fetch just the product-list HTML; never load its images/scripts.
+  // Quick Edit / Update is still performed by native WordPress JavaScript.
+  async function fastSearchAndEdit(id) {
+    if (location.pathname !== '/wp-admin/edit.php' ||
+        new URLSearchParams(location.search).get('post_type') !== 'product') return false;
+    const list = document.querySelector('#the-list');
+    if (!list || !unsafeWindow.inlineEditPost || !document.querySelector('#inline-edit')) return false;
+    try {
+      const url = ORIGIN + '/wp-admin/edit.php?post_type=product&s=' + encodeURIComponent(id);
+      const response = await fetch(url,{credentials:'same-origin',cache:'no-store',redirect:'follow',signal:AbortSignal.timeout(18000)});
+      if (!response.ok || response.url.includes('wp-login.php')) throw new Error('Нет доступа к поиску товаров');
+      const html = (await response.text()).replace(/<img\\b[^>]*>/gi,'');
+      const parsed = new DOMParser().parseFromString(html,'text/html');
+      if (!parsed.querySelector('#the-list') || parsed.querySelector('#loginform')) throw new Error('Неполный HTML списка WordPress');
+      const row = parsed.getElementById('post-' + id);
+      if (!row) {
+        finish('missing','точный ID не найден (ускоренный поиск)');
+        return true;
+      }
+      if (!row.querySelector('.editinline')) return false;
+      const imported = document.importNode(row,true);
+      list.replaceChildren(imported);
+      const inlineMeta = parsed.getElementById('inline_' + id);
+      if (inlineMeta && !document.getElementById('inline_' + id)) imported.append(document.importNode(inlineMeta,true));
+      log('ID '+id+': строка товара найдена через fetch без полной загрузки страницы');
+      await processFound(id, imported);
+      return true;
+    } catch (e) {
+      if (state.phase === 'saving') {
+        state.status = 'paused'; save();
+        log('Update мог выполниться для ID '+id+'. Повторный запрос заблокирован: '+e.message,'error');
+        return true;
+      }
+      log('Ускоренный поиск недоступен; обычный поиск WordPress: '+e.message);
+      return false;
+    }
+  }
+  async function tick() {
+    if (busy || state.status !== 'running') return;
+    busy = true;
+    try {
+      while (state.status === 'running' && state.index < state.ids.length) {
+        const id = state.ids[state.index];
+        const visibleId = new URLSearchParams(location.search).get('s') || '';
+        if (visibleId !== id) {
+          await sleep(Math.min(1000, state.delayMs));
+          if (state.status !== 'running') break;
+          if (state.fastMode && await fastSearchAndEdit(id)) {
+            if (state.status !== 'running') break;
+            await sleep(state.delayMs);
+            continue;
+          }
+          await searchId(id);
+          return; // Browser navigates; the script auto-resumes on the results page.
+        }
+        setMessage(`ID ${id}: ищу точное совпадение и открываю Quick Edit...`);
+        const row = document.getElementById('post-' + id);
+        if (!row) {
+          finish('missing', 'точный ID отсутствует в результатах поиска');
+        } else {
+          try { await processFound(id, row); }
+          catch (e) {
+            // Saving may have reached the server: don't automatically retry it.
+            if (state.phase === 'saving') {
+              state.status = 'paused';
+              state.lastMessage = `ID ${id}: ответ сервера не получен. Проверьте дату вручную. ${e.message}`;
+              log(state.lastMessage, 'error'); save(); break;
+            }
+            finish('error', e.message);
+          }
+        }
+        if (state.status !== 'running') break;
+        await sleep(state.delayMs);
+      }
+    } catch (e) {
+      state.status = 'paused';
+      log(`Пауза из-за ошибки: ${e.message}`, 'error'); save();
+    } finally { busy = false; draw(); }
+  }
+  function start(limit = null) {
+    if (!state.ids.length) { log('Сначала загрузите список ID', 'error'); return; }
+    if (state.index >= state.ids.length) { log('Все ID обработаны. Сбросьте или загрузите новый список.'); return; }
+    if (!dateRange()) { log('Укажите корректный диапазон дат: дата «От» не позже даты «До».', 'error'); return; }
+    if (state.phase === 'saving') {
+      if (!confirm('Последний Update мог выполниться, но ответ не был получен. Проверьте дату текущего товара на сайте. Повторно попробовать этот ID?')) return;
+      state.phase = 'search'; state.dateCandidate = null;
+    }
+    state.batchRemaining = limit;
+    state.status = 'running';
+    state.dryRun = $('#smm-dry').checked;
+    save(); draw();
+    log(`${limit ? 'Тестовая партия: '+limit+' ID' : 'Запуск обработки'}. ${state.dryRun ? 'Только поиск; никаких обновлений' : 'Изменение дат включено: '+dateLabel(state.dateFrom)+' — '+dateLabel(state.dateTo)}`);
+    if (IS_DATE_WORKER) {
+      tick();
+    } else {
+      const w = window.open(workerURL, workerName);
+      if (!w) {
+        state.status = 'paused'; save();
+        log('Рабочая вкладка заблокирована браузером. Разрешите всплывающие окна.', 'error');
+      }
+    }
+  }
+  function pause() {
+    state.status = 'paused';
+    state.lastMessage = state.phase === 'saving' ? 'Ожидаем ответа Update; следующий ID автоматически не начнётся.' : 'Остановлено пользователем';
+    save(); draw(); log('Пауза по команде пользователя');
+  }
+  const safeForExcel = value => {
+    let s = String(value ?? '');
+    if (/^[\s\t\r\n]*[=+@-]/.test(s)) s = "'" + s;
+    return s;
+  };
+  function exportCsv(rows, filename) {
+    const csv = '\ufeff' + rows.map(row => row.map(v => `"${safeForExcel(v).replace(/"/g,'""')}"`).join(';')).join('\r\n');
+    download(new Blob([csv], {type:'text/csv;charset=utf-8'}), filename);
+  }
+  function download(blob, filename) {
+    const obj = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = obj; a.download = filename;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(obj), 10000);
+  }
+  function reportRows(selected = state.records) {
+    const labels = {updated:'Обновлено',found:'Найдено, без изменений',missing:'Не найдено',error:'Ошибка'};
+    return [['ID','Статус','Новая дата (время сайта)','Детали'], ...selected.map(r => [r.id,labels[r.status] || r.status,r.date || '',r.detail || ''])];
+  }
+  function reportExcel() {
+    if (typeof XLSX === 'undefined') {
+      log('Не загружена Excel-библиотека. Отчет сохранен в CSV.', 'error');
+      exportCsv(reportRows(), 'smmmaster_report.csv'); return;
+    }
+    const wb = XLSX.utils.book_new();
+    for (const [sheet, subset] of [
+      ['Все результаты',state.records], ['Обновлены',state.records.filter(r => r.status === 'updated')],
+      ['Не найдены',state.records.filter(r => r.status === 'missing')],
+      ['Ошибки',state.records.filter(r => r.status === 'error')]
+    ]) {
+      const ws = XLSX.utils.aoa_to_sheet(reportRows(subset));
+      ws['!cols'] = [{wch:15},{wch:28},{wch:24},{wch:65}];
+      XLSX.utils.book_append_sheet(wb, ws, sheet);
+    }
+    XLSX.writeFile(wb, 'smmmaster_dates_report.xlsx');
+    log('Excel-отчёт выгружен.');
+  }
+
+  $('#smm-import').addEventListener('click', () => $('#smm-file').click());
+  $('#smm-file').addEventListener('change', e => onFileChange(e.target.files[0]));
+  $('#smm-accept-column').addEventListener('click', () => {
+    const n = Number($('#smm-column').value);
+    storeImported(idsFromColumn(rowsFromFile, n), `${activeFileName} · ${activeSheet} · столбец ${n+1}`);
+    $('#smm-column-wrap').style.display = 'none';
+  });
+  $('#smm-add-pasted').addEventListener('click', () => {
+    const chunks = $('#smm-paste').value.split(/[\n\r\t;,]+/);
+    storeImported(chunks.map(toId).filter(Boolean), 'Вставленный текст');
+  });
+  for (const [field, key] of [['smm-date-from', 'dateFrom'], ['smm-date-to', 'dateTo']]) {
+    const input = $('#' + field);
+    input.value = state[key];
+    input.addEventListener('change', () => {
+      if (state.status === 'running') { input.value = state[key]; return; }
+      const candidateFrom = key === 'dateFrom' ? input.value : state.dateFrom;
+      const candidateTo = key === 'dateTo' ? input.value : state.dateTo;
+      if (!dateRange(candidateFrom, candidateTo)) {
+        input.value = state[key];
+        log('Неверный диапазон: проверьте обе даты. Начало не может быть позже конца.', 'error');
+        return;
+      }
+      state[key] = input.value;
+      state.dateCandidate = null;
+      save(); draw();
+      log('Диапазон обновлён: ' + dateLabel(state.dateFrom) + ' — ' + dateLabel(state.dateTo));
+    });
+  }
+  $('#smm-test').addEventListener('click', () => start(3));
+  $('#smm-start').addEventListener('click', () => start(null));
+  $('#smm-pause').addEventListener('click', pause);
+  $('#smm-report').addEventListener('click', reportExcel);
+  $('#smm-missing-csv').addEventListener('click', () => {
+    const missing = state.records.filter(r => r.status === 'missing');
+    exportCsv(reportRows(missing), 'smmmaster_not_found_ID.csv');
+    log(`Экспортировано ненайденных ID: ${missing.length}`);
+  });
+  $('#smm-reset').addEventListener('click', () => {
+    if (state.status === 'running') { log('Сначала поставьте скрипт на паузу', 'error'); return; }
+    if (!confirm('Удалить загруженную очередь и историю результатов в этом браузере?')) return;
+    const { dateFrom, dateTo } = state;
+    state = { ...emptyState(), dateFrom, dateTo }; save(); draw();
+  });
+  $('#smm-dry').addEventListener('change', e => { state.dryRun = e.target.checked; save(); });
+  $('#smm-delay').addEventListener('change', e => {
+    if (state.status === 'running') { e.target.value=state.delayMs; return; }
+    state.delayMs=Math.max(200,Math.min(15000,Number(e.target.value)||350)); save(); draw();
+  });
+  $('#smm-fast').addEventListener('change', e => {
+    if (state.status === 'running') { e.target.checked=!!state.fastMode; return; }
+    state.fastMode=e.target.checked; save(); draw();
+  });
+  if (state.status === 'running' && state.phase === 'saving' && IS_DATE_WORKER) {
+    state.status = 'paused';
+    state.lastMessage = 'Страница перезагрузилась во время Update. Проверьте текущий ID вручную до продолжения.';
+    log(state.lastMessage, 'error');
+  }
+  draw();
+  if (state.status === 'running' && IS_DATE_WORKER &&
+      location.pathname === '/wp-admin/edit.php' &&
+      new URLSearchParams(location.search).get('post_type') === 'product') {
+    log(`Рабочая вкладка: продолжение с ID ${state.ids[state.index]}`);
+    setTimeout(tick, 350);
+  }
+}
   function mount(){
     const host=document.createElement('div');host.id='bwo-woo-course-manager';host.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:2147483646';document.documentElement.append(host);
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
-      <button class="pill hidden" id="pill">Товары · открыть панель</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>Редактор курсов для SMM курсов</b><small>${esc(SITE)} · v1.0.6</small></div><span class="space"></span><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
-      <div class="body"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
+      <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>Редактор курсов для SMM курсов</b><small>${esc(SITE)} · v1.1.0</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <nav class="module-nav"><button data-module="courses" class="active">1. Редактор курсов</button><button data-module="dates">2. Редактор дат</button><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
+      <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
       <div class="actions"><button class="primary" id="start">▶ Начать</button><button id="one">Один товар</button><button id="pause">Ⅱ Пауза</button><button class="danger" id="stop">■ Стоп</button><button id="retry">Повторить ошибки</button><button id="report">↓ Отчёт</button></div>
       <nav class="tabs"><button data-tab="queue">Очередь</button><button data-tab="processed">Обработанные</button><button data-tab="import" class="active">Импорт Excel</button><button data-tab="log">Журнал</button><button data-tab="settings">Настройки</button><button data-tab="help">Как работать</button></nav>
@@ -725,10 +1460,10 @@
       <h3>3. Что делает скрипт</h3><p>Открывает <code>/wp-admin/post.php?post=ID&amp;action=edit</code>. Заполняет Name и slug, переключает редактор Description в Text, вставляет HTML и возвращается в Visual. Меняет Regular price и ACF lessons, снимает Downloadable, удаляет старую обложку, ищет точную фотографию по img и нажимает Set product image. После проверки полей нажимает Update и перезагружает товар для сверки.</p>
       <h3>4. Пауза, ошибки и безопасность</h3><p>Не редактируйте страницу вручную во время работы. Пауза останавливает новые действия, но не отменяет отправленный Update. После сохранения статус «Выполнено» ставится только после сверки на новой странице. Если данные не совпали — «Проверить», повторный Update автоматически не выполняется. Для такого товара доступна проверка без Update через «⋯».</p><p>Если произошла ошибка, исправьте причину, затем «Повторить ошибки». Неверные строки Excel исправляются только повторным импортом. Скачивайте отчёт и журнал. Очереди и настройки независимы для каждого сайта: <b>smmmaster.net, hottestcourse.com, learnmarket.net, profcourse.com, bestsocials.online</b>.</p>
       <h3>Ограничения</h3><p>Скрипт рассчитан на Classic WordPress / WooCommerce и указанные элементы ACF. В отдельных темах или версиях админки разметка может отличаться. При отсутствии нужных полей скрипт останавливается до Update.</p></div>
-      <footer class="foot"><span id="updated">Очередь хранится локально</span><button id="prev">←</button><span id="pages" style="flex:none">1 / 1</span><button id="next">→</button></footer></div></section>`;
+      <footer class="foot"><span id="updated">Очередь хранится локально</span><button id="prev">←</button><span id="pages" style="flex:none">1 / 1</span><button id="next">→</button></footer></div><div class="body hidden" id="date-content"></div></section>`;
     panel=$('panel');
     const on=(id,ev,fn)=>$(id).addEventListener(ev,fn);
-    on('start','click',()=>start(false));on('one','click',()=>start(true));on('pause','click',()=>stop(true));on('stop','click',()=>stop(false));
+    on('start','click',()=>launchCourse(false));on('one','click',()=>launchCourse(true));on('pause','click',()=>stopCourseFromPanel(true));on('stop','click',()=>stopCourseFromPanel(false));
     on('retry','click',retryErrors);on('report','click',exportReport);on('downloadLog','click',exportLog);on('reset','click',resetAll);
     on('load','click',loadQueue);on('backup','click',()=>download(JSON.stringify(state,null,2),`${SITE}-woo-products-backup.json`,'application/json'));
     on('file','change',e=>readFile(e.target.files[0]));on('sheet','change',setMapping);
@@ -740,12 +1475,27 @@
     on('stopOnError','change',e=>{if(!editable())return;state.settings.stopOnError=e.target.checked;persist();render();});
     on('min','click',()=>{panel.classList.add('hidden');$('pill').classList.remove('hidden');});
     const show=()=>{panel.classList.remove('hidden');$('pill').classList.add('hidden');};
-    on('pill','click',show);GM_registerMenuCommand('Открыть редактор курсов для SMM курсов',show);
+    on('pill','click',show);
+    on('dashboard','click',openDashboard);
+    root.querySelectorAll('[data-module]').forEach(b=>b.addEventListener('click',()=>selectModule(b.dataset.module)));
+    GM_registerMenuCommand('1. Редактор курсов',()=>{show();selectModule('courses');});
+    GM_registerMenuCommand('2. Редактор дат',()=>{show();selectModule('dates');});
+    GM_registerMenuCommand('Открыть менеджер в отдельной вкладке',openDashboard);
     on('full','click',()=>{maximized=!maximized;panel.classList.toggle('full',maximized);panel.style.top='';panel.style.left='';panel.style.right='';panel.style.bottom='';});
     let drag=null;
     on('drag','pointerdown',e=>{if(e.target.closest('button')||maximized)return;const rect=panel.getBoundingClientRect();drag={x:e.clientX-rect.left,y:e.clientY-rect.top};e.currentTarget.setPointerCapture(e.pointerId);});
     on('drag','pointermove',e=>{if(!drag)return;panel.style.left=Math.max(0,Math.min(innerWidth-panel.offsetWidth,e.clientX-drag.x))+'px';panel.style.top=Math.max(0,Math.min(innerHeight-panel.offsetHeight,e.clientY-drag.y))+'px';panel.style.right='auto';panel.style.bottom='auto';});
     on('drag','pointerup',()=>drag=null);
+    initializeDateManager(root,{SITE,ORIGIN});
+    if(IS_DASHBOARD){
+      panel.classList.add('dashboard');
+      document.documentElement.style.overflow='hidden';
+      $('dashboard').textContent='Панель открыта отдельно';
+      $('dashboard').disabled=true;
+    } else if(IS_COURSE_WORKER || SMM_PARAMS.get('smm_manager')==='date-worker') {
+      panel.classList.add('hidden');$('pill').classList.remove('hidden');
+    }
+    selectModule(GM_getValue(MODE_KEY,'courses'));
     render();if(state.rows.length)switchTab('queue');
   }
   function captureErrors(){
@@ -758,12 +1508,22 @@
     let ticket;try{ticket=JSON.parse(sessionStorage.getItem(TICKET)||'null');}catch{ticket=null;}
     sessionStorage.removeItem(TICKET);
     mount();captureErrors();
+    GM_addValueChangeListener(KEY,(name,oldValue,newValue,remote)=>{
+      if(remote&&!working&&newValue&&typeof newValue==='object'){state=newValue;render();}
+    });
+    GM_addValueChangeListener(COMMAND,(name,oldValue,newValue,remote)=>{
+      if(remote&&working&&newValue&&(newValue.kind==='pause'||newValue.kind==='stop'))
+        stop(newValue.kind==='pause');
+    });
     const row=state.rows[state.index];
-    if(ticket&&row&&ticket.tab===tabId&&ticket.run===state.run&&ticket.id===row.id&&Date.now()-ticket.at<180000){
+    if(SMM_PARAMS.get('smm_manager')==='course-worker'&&!ticket){
+      window.name='smm-manager-courses-'+SITE;
+      await start(SMM_PARAMS.get('smm_one')==='1');
+    }else if(ticket&&row&&ticket.tab===tabId&&ticket.run===state.run&&ticket.id===row.id&&Date.now()-ticket.at<180000){
       log('info','Новая страница загружена: продолжаем очередь.',row);
       await start(state.single,true);
-    }else if(state.running){
-      state.running=false;state.paused=true;persist();log('warn','Автопереход не подтверждён. Нажмите «Продолжить» для возобновления.',row);
+    }else if(state.running&&IS_COURSE_WORKER){
+      state.running=false;state.paused=true;persist();log('warn','Автопереход рабочего процесса не подтверждён. Продолжите через панель управления.',row);
     }
   });
 })();
