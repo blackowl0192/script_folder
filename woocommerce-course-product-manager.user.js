@@ -1,12 +1,28 @@
 // ==UserScript==
-// @name         WooCommerce — Course Product Manager (HottestCourse / SMMMaster)
+// @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.0.4
-// @description  Excel → WooCommerce products: title, permalink, HTML, regular price, ACF lessons, downloadable off, product image. Per-site queue, verification and logs.
-// @match        https://hottestcourse.com/wp-admin/*
-// @match        https://hottestcourse.com/wp-login.php*
+// @version      1.0.5
+// @description  Массовое редактирование WooCommerce-курсов из Excel: название, URL (slug), HTML-описание, обычная цена, количество уроков (ACF lessons), отключение Downloadable, обложка из медиатеки; очередь, проверка сохранения, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
+// @match        https://www.smmmaster.net/wp-admin/*
+// @match        https://www.smmmaster.net/wp-login.php*
+// @match        https://hottestcourse.com/wp-admin/*
+// @match        https://hottestcourse.com/wp-login.php*
+// @match        https://www.hottestcourse.com/wp-admin/*
+// @match        https://www.hottestcourse.com/wp-login.php*
+// @match        https://learnmarket.net/wp-admin/*
+// @match        https://learnmarket.net/wp-login.php*
+// @match        https://www.learnmarket.net/wp-admin/*
+// @match        https://www.learnmarket.net/wp-login.php*
+// @match        https://profcourse.com/wp-admin/*
+// @match        https://profcourse.com/wp-login.php*
+// @match        https://www.profcourse.com/wp-admin/*
+// @match        https://www.profcourse.com/wp-login.php*
+// @match        https://bestsocials.online/wp-admin/*
+// @match        https://bestsocials.online/wp-login.php*
+// @match        https://www.bestsocials.online/wp-admin/*
+// @match        https://www.bestsocials.online/wp-login.php*
 // @updateURL   https://raw.githubusercontent.com/blackowl0192/script_folder/main/woocommerce-course-product-manager.user.js
 // @downloadURL https://raw.githubusercontent.com/blackowl0192/script_folder/main/woocommerce-course-product-manager.user.js
 // @run-at       document-idle
@@ -32,10 +48,10 @@
 
 (() => {
   'use strict';
-  const HOSTS = new Set(['hottestcourse.com', 'smmmaster.net']);
-  if (location.protocol !== 'https:' || !HOSTS.has(location.hostname)) return;
+  const HOSTS = new Set(['smmmaster.net', 'hottestcourse.com', 'learnmarket.net', 'profcourse.com', 'bestsocials.online']);
+  const SITE = location.hostname.replace(/^www\./, '');
+  if (location.protocol !== 'https:' || !HOSTS.has(SITE)) return;
   const ORIGIN = location.origin;
-  const SITE = location.hostname;
   const KEY = `bwo.wc.course.product.v1.${SITE}`;
   const LEASE = `${KEY}.lease`;
   const TICKET = `${KEY}.nav`;
@@ -693,7 +709,7 @@
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">Товары · открыть панель</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>WooCommerce · Курсы</b><small>${esc(SITE)} · v1.0.0</small></div><span class="space"></span><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>Редактор курсов для SMM курсов</b><small>${esc(SITE)} · v1.0.5</small></div><span class="space"></span><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <div class="body"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
       <div class="actions"><button class="primary" id="start">▶ Начать</button><button id="one">Один товар</button><button id="pause">Ⅱ Пауза</button><button class="danger" id="stop">■ Стоп</button><button id="retry">Повторить ошибки</button><button id="report">↓ Отчёт</button></div>
@@ -707,7 +723,7 @@
       <div class="view help hidden" id="help"><h3>1. Подготовьте Excel</h3><p>Первая строка: <b>ID, Name, Description, Regular price, lessons, img</b>. ID — существующий post ID товара. Description — HTML, как в редакторе WordPress. Regular price может быть с € или запятой. lessons — целое положительное число. img — 14-значное имя уже загруженной фотографии в Media Library (не внутренний attachment ID).</p>
       <h3>2. Импортируйте товары</h3><ol><li>Войдите в <b>${esc(SITE)}</b> как администратор.</li><li>Откройте «Импорт Excel», выберите файл, лист и шесть колонок.</li><li>Нажмите «Загрузить в очередь». Курсы будут перемешаны; номера исходных строк останутся в отчёте.</li><li>Нажмите «Один товар» и проверьте сохранённые поля на сайте; после этого нажмите «Начать» для остальных.</li></ol>
       <h3>3. Что делает скрипт</h3><p>Открывает <code>/wp-admin/post.php?post=ID&amp;action=edit</code>. Заполняет Name и slug, переключает редактор Description в Text, вставляет HTML и возвращается в Visual. Меняет Regular price и ACF lessons, снимает Downloadable, удаляет старую обложку, ищет точную фотографию по img и нажимает Set product image. После проверки полей нажимает Update и перезагружает товар для сверки.</p>
-      <h3>4. Пауза, ошибки и безопасность</h3><p>Не редактируйте страницу вручную во время работы. Пауза останавливает новые действия, но не отменяет отправленный Update. После сохранения статус «Выполнено» ставится только после сверки на новой странице. Если данные не совпали — «Проверить», повторный Update автоматически не выполняется. Для такого товара доступна проверка без Update через «⋯».</p><p>Если произошла ошибка, исправьте причину, затем «Повторить ошибки». Неверные строки Excel исправляются только повторным импортом. Скачивайте отчёт и журнал. Сайты <b>hottestcourse.com</b> и <b>smmmaster.net</b> имеют независимые очереди и настройки.</p>
+      <h3>4. Пауза, ошибки и безопасность</h3><p>Не редактируйте страницу вручную во время работы. Пауза останавливает новые действия, но не отменяет отправленный Update. После сохранения статус «Выполнено» ставится только после сверки на новой странице. Если данные не совпали — «Проверить», повторный Update автоматически не выполняется. Для такого товара доступна проверка без Update через «⋯».</p><p>Если произошла ошибка, исправьте причину, затем «Повторить ошибки». Неверные строки Excel исправляются только повторным импортом. Скачивайте отчёт и журнал. Очереди и настройки независимы для каждого сайта: <b>smmmaster.net, hottestcourse.com, learnmarket.net, profcourse.com, bestsocials.online</b>.</p>
       <h3>Ограничения</h3><p>Скрипт рассчитан на Classic WordPress / WooCommerce и указанные элементы ACF. В отдельных темах или версиях админки разметка может отличаться. При отсутствии нужных полей скрипт останавливается до Update.</p></div>
       <footer class="foot"><span id="updated">Очередь хранится локально</span><button id="prev">←</button><span id="pages" style="flex:none">1 / 1</span><button id="next">→</button></footer></div></section>`;
     panel=$('panel');
@@ -724,7 +740,7 @@
     on('stopOnError','change',e=>{if(!editable())return;state.settings.stopOnError=e.target.checked;persist();render();});
     on('min','click',()=>{panel.classList.add('hidden');$('pill').classList.remove('hidden');});
     const show=()=>{panel.classList.remove('hidden');$('pill').classList.add('hidden');};
-    on('pill','click',show);GM_registerMenuCommand('Открыть WooCommerce Course Manager',show);
+    on('pill','click',show);GM_registerMenuCommand('Открыть редактор курсов для SMM курсов',show);
     on('full','click',()=>{maximized=!maximized;panel.classList.toggle('full',maximized);panel.style.top='';panel.style.left='';panel.style.right='';panel.style.bottom='';});
     let drag=null;
     on('drag','pointerdown',e=>{if(e.target.closest('button')||maximized)return;const rect=panel.getBoundingClientRect();drag={x:e.clientX-rect.left,y:e.clientY-rect.top};e.currentTarget.setPointerCapture(e.pointerId);});
