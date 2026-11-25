@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.2.4
+// @version      1.3.0
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -56,15 +56,25 @@
   const SMM_PARAMS = new URLSearchParams(location.search);
   const IS_DASHBOARD = SMM_PARAMS.get('smm_manager') === 'dashboard';
   const COURSE_WORKER_SESSION = 'smm.manager.course.worker.' + SITE;
-  if (SMM_PARAMS.get('smm_manager') === 'course-worker') sessionStorage.setItem(COURSE_WORKER_SESSION, '1');
-  const IS_COURSE_WORKER = SMM_PARAMS.get('smm_manager') !== 'dashboard' &&
-    (SMM_PARAMS.get('smm_manager') === 'course-worker' ||
-      (window.name === 'smm-manager-courses-' + SITE && sessionStorage.getItem(COURSE_WORKER_SESSION) === '1'));
-  const KEY = `bwo.wc.course.product.v1.${SITE}`;
+  const WORKER_PREFIX = 'smm-manager-courses-' + SITE + '-w';
+  const workerRequested = Number(SMM_PARAMS.get('smm_worker') || 0);
+  const validWorker = n => Number.isInteger(n) && n >= 1 && n <= 5;
+  if(SMM_PARAMS.get('smm_manager')==='course-worker' && validWorker(workerRequested)){
+    window.name=WORKER_PREFIX+workerRequested;
+    sessionStorage.setItem(COURSE_WORKER_SESSION,String(workerRequested));
+  }
+  const namedWorker = window.name.startsWith(WORKER_PREFIX) ? Number(window.name.slice(WORKER_PREFIX.length)) : 0;
+  const WORKER_ID = !IS_DASHBOARD && validWorker(namedWorker) &&
+    sessionStorage.getItem(COURSE_WORKER_SESSION)===String(namedWorker) ? namedWorker : 0;
+  const IS_COURSE_WORKER = WORKER_ID>0;
+  const MASTER_KEY = `bwo.wc.course.product.v1.${SITE}`;
+  const POOL_KEY = MASTER_KEY + '.pool';
+  const workerKey = id => MASTER_KEY+'.worker.'+id;
+  const KEY = IS_COURSE_WORKER ? workerKey(WORKER_ID) : MASTER_KEY;
   const LEASE = `${KEY}.lease`;
   const TICKET = `${KEY}.nav`;
   const COMMAND = `${KEY}.command`;
-  const MODE_KEY = `${KEY}.ui.mode`;
+  const MODE_KEY = `${MASTER_KEY}.ui.mode`;
   const ALIAS = {id:['id','postid','productid'],name:['name','title','productname'],description:['description','content','info'],price:['regularprice','price'],lessons:['lessons','lesson'],img:['img','image','photo']};
   const STATUSES = {pending:'В очереди',opening:'Открывается',filling:'Заполняется',saving:'Сохраняется',verifying:'Проверяется',done:'Выполнено',review:'Проверить',error:'Ошибка',skipped:'Пропущено'};
   const ACTIVE = new Set(['opening','filling','saving','verifying']);
@@ -74,8 +84,66 @@
   const error = (message,fatal=false) => Object.assign(new Error(message),{fatal});
   const STOP = Symbol('stopped');
   const esc = value => String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const empty = () => ({version:1,rows:[],logs:[],filename:'',run:'',index:-1,phase:'idle',running:false,paused:false,owner:'',single:false,stopAfterVerify:false,settings:{delay:3,stopOnError:true},updated:''});
+  const empty = () => ({version:1,rows:[],logs:[],filename:'',run:'',index:-1,phase:'idle',running:false,paused:false,owner:'',single:false,stopAfterVerify:false,settings:{delay:3,stopOnError:true,workers:1},updated:''});
   let state = GM_getValue(KEY,null)||empty();
+
+  // Every worker has an independent state key; the dashboard only merges read-only snapshots.
+  function currentPool(){return GM_getValue(POOL_KEY,null);}
+  function activeLease(id){const l=GM_getValue(workerKey(id)+'.lease',null);return !!(l && l.expires>Date.now());}
+  function poolBusy(pool=currentPool()){
+    return !!(pool && (pool.workers.some(activeLease) ||
+      Date.now()-pool.createdAt<20000 && pool.workers.some(id=>{
+        const x=GM_getValue(workerKey(id),null);
+        return x?.run===pool.run && x.rows?.some(r=>r.status==='pending'||ACTIVE.has(r.status));
+      })));
+  }
+  function mergedCourseState(){
+    if(IS_COURSE_WORKER)return GM_getValue(KEY,empty());
+    const base=GM_getValue(MASTER_KEY,empty());
+    const pool=currentPool();
+    if(!pool?.workers?.length)return base;
+    const rows=base.rows.map(r=>({...r}));
+    const positions=new Map(rows.map((r,i)=>[r.key,i]));
+    const logs=[...(base.logs||[])],workers=[];
+    for(const id of pool.workers){
+      const sub=GM_getValue(workerKey(id),null);
+      if(!sub||sub.run!==pool.run)continue;
+      for(const r of sub.rows||[]){
+        const ix=positions.get(r.key);
+        if(ix!==undefined)rows[ix]={...r,worker:id};
+      }
+      logs.push(...(sub.logs||[]).map(x=>({...x,worker:id})));
+      workers.push({id,live:activeLease(id),running:!!sub.running,
+        done:sub.rows.filter(r=>r.status==='done').length,
+        total:sub.rows.length,paused:!!sub.paused});
+    }
+    logs.sort((a,b)=>String(a.time||'').localeCompare(String(b.time||'')));
+    return {...base,rows,logs:logs.slice(-2000),running:workers.some(w=>w.live),
+      paused:workers.some(w=>w.paused),poolWorkers:workers,
+      poolStarting:Date.now()-pool.createdAt<20000 && workers.some(w=>!w.live&&w.total&&!w.done)};
+  }
+  function consolidatePool(){
+    const pool=currentPool();
+    if(!pool)return GM_getValue(MASTER_KEY,empty());
+    if(poolBusy(pool))return null;
+    const result=mergedCourseState();
+    for(const row of result.rows){
+      if(['saving','verifying'].includes(row.status)){
+        row.status='review';
+        row.message='Сохранение не подтверждено после остановки рабочего потока. Проверьте товар без повторного Update.';
+      }else if(['opening','filling'].includes(row.status)){
+        row.status='pending';
+        row.message='Прервано до отправки Update, возвращено в очередь.';
+      }
+      delete row.worker;
+    }
+    delete result.poolWorkers;delete result.poolStarting;
+    result.running=false;result.paused=true;result.index=-1;result.phase='idle';result.owner='';
+    result.stopAfterVerify=false;result.updated=new Date().toISOString();
+    GM_setValue(MASTER_KEY,result);
+    GM_setValue(POOL_KEY,null);
+    return result;
+  }
   let tabId,root,panel,workbook=null,importFile='',working=false,leaving=false,halted=false,single=false,leaseTimer;
   let tab='import',page=0,filter='all',search='',maximized=false;
   const $ = id=>root.getElementById(id);
@@ -165,7 +233,12 @@
   }
   function stage(r,status,message){guard(status==='saving'||status==='verifying');r.status=status;state.phase=status;r.message=message;log('info',message,r);}
   function owned(){const lease=GM_getValue(LEASE,null);return !!(lease&&lease.tab===tabId&&lease.expires>Date.now());}
-  function guard(allowStopped=false){authCheck();if(!owned())throw error('Другая вкладка управляет очередью либо завершилась аренда.',true);if(halted&&!allowStopped)throw STOP;}
+  function guard(allowStopped=false){
+    authCheck();
+    if(IS_COURSE_WORKER && currentPool()?.run!==state.run)throw error('Этот рабочий поток принадлежит старой очереди и остановлен.',true);
+    if(!owned())throw error('Другая вкладка управляет очередью либо завершилась аренда.',true);
+    if(halted&&!allowStopped)throw STOP;
+  }
   async function waitFor(fn,label,timeout=25000,allowStopped=false){
     const started=Date.now();
     while(Date.now()-started<timeout){guard(allowStopped);const result=fn();if(result)return result;await sleep(200);}
@@ -410,6 +483,7 @@
     guard(true);
     const r=state.rows[state.index];
     sessionStorage.setItem(TICKET,JSON.stringify({tab:tabId,run:state.run,id:r?.id||'',kind,at:Date.now()}));
+    if(IS_COURSE_WORKER)window.name=WORKER_PREFIX+WORKER_ID;
     persist();leaving=true;
     const resolved=new URL(url,ORIGIN);
     if(resolved.origin!==ORIGIN)throw error('Запрещён переход на другой сайт.',true);
@@ -533,7 +607,12 @@
   }
   async function start(oneOnly=false,automatic=false){
     if(working){notice('Очередь уже выполняется.');return;}
+    if(!IS_COURSE_WORKER){notice('Запускайте очередь из кнопки «Начать» в панели управления.');return;}
     state=GM_getValue(KEY,empty());
+    const activePool=currentPool();
+    if(!activePool || activePool.run!==state.run || !activePool.workers.includes(WORKER_ID)){
+      notice('Рабочая вкладка не принадлежит активному запуску.');return;
+    }
     if(['running'].includes(GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.status) || GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.phase==='saving'){
       log('error','Редактор дат выполняет задачи на этом сайте. Одновременные изменения заблокированы.');
       return;
@@ -541,7 +620,7 @@
     try{
       authCheck();await acquire();halted=false;
       single=automatic?!!state.single:oneOnly;
-      if(!automatic){state.run=uid();state.paused=false;state.single=oneOnly;}
+      if(!automatic){state.run=state.run||uid();state.paused=false;state.single=oneOnly;}
       state.owner=tabId;state.running=true;
       const r=state.rows[state.index];
       if(r&&['saving','verifying'].includes(r.status)&&r.expected&&r.saveDoc===DOC){
@@ -551,10 +630,12 @@
     }catch(ex){state.running=false;persist();release();log('error',ex.message||String(ex));}
   }
   function editable(){
-    if(working){notice('Сначала остановите обработку.');return false;}
-    const lease=GM_getValue(LEASE,null);
-    if(lease&&lease.expires>Date.now()&&lease.tab!==tabId){notice('Другая вкладка выполняет очередь.');return false;}
-    state=GM_getValue(KEY,empty());return true;
+    if(working || IS_COURSE_WORKER){notice('Остановите обработку и используйте основную панель управления.');return false;}
+    if(poolBusy()){notice('Есть активные рабочие вкладки курсов. Сначала дождитесь их завершения.');return false;}
+    const legacy=GM_getValue(MASTER_KEY+'.lease',null);
+    if(legacy && legacy.expires>Date.now()){notice('Старая очередь ещё выполняется.');return false;}
+    state=consolidatePool()||GM_getValue(MASTER_KEY,empty());
+    return true;
   }
   function shuffle(rows){for(let i=rows.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[rows[i],rows[j]]=[rows[j],rows[i]];}return rows;}
   function sheetRows(){return XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[Number($('sheet').value)]],{header:1,defval:'',raw:false,blankrows:true});}
