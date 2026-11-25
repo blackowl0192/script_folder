@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.3.9
+// @version      1.3.10
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -48,7 +48,7 @@
 
 (() => {
   'use strict';
-  const SCRIPT_VERSION='1.3.9';
+  const SCRIPT_VERSION='1.3.10';
   const HOSTS = new Set(['smmmaster.net', 'hottestcourse.com', 'learnmarket.net', 'profcourse.com', 'bestsocials.online']);
   const SITE = location.hostname.replace(/^www\./, '');
   if (location.protocol !== 'https:' || !HOSTS.has(SITE)) return;
@@ -182,8 +182,13 @@
     const result=mergedCourseState();
     for(const row of result.rows){
       if(['saving','verifying'].includes(row.status)){
-        row.status='review';
-        row.message='Сохранение не подтверждено после остановки рабочего потока. Проверьте товар без повторного Update.';
+        if(row.expected && row.saveAt){
+          row.status='verifying';
+          row.message='Предыдущий Update мог сохраниться. При продолжении проверим результат с новой страницы без повторной отправки.';
+        }else{
+          row.status='review';
+          row.message='Сохранение не подтверждено и нет достаточных данных для сверки. Проверьте вручную; повторный Update запрещён.';
+        }
       }else if(['opening','filling'].includes(row.status)){
         row.status='pending';
         row.message='Прервано до отправки Update, возвращено в очередь.';
@@ -1738,7 +1743,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.9</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.10</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
@@ -1833,7 +1838,10 @@ function initializeDateManager(root, context) {
         GM_addValueChangeListener(workerKey(i),(name,oldValue,newValue,remote)=>{if(remote)refresh();});
     }
     const row=state.rows[state.index];
-    if(IS_COURSE_WORKER&&SMM_PARAMS.get('smm_manager')==='course-worker'&&!ticket){
+    // An old ticket can survive if the same named tab is reused for a new run.
+    // A fresh worker launch URL must not be blocked by a stale ticket.
+    if(IS_COURSE_WORKER&&SMM_PARAMS.get('smm_manager')==='course-worker'&&
+      (!ticket || ticket.run!==state.run || ticket.id!==row?.id)){
       if(SMM_PARAMS.get('smm_run')===state.run){
         await start(SMM_PARAMS.get('smm_one')==='1');
       } else notice('Ссылка рабочего процесса устарела — задача не запущена.');
