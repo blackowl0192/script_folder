@@ -209,7 +209,7 @@ function initializeDateManager(root, context) {
   panel.innerHTML = `
     <div class="head" id="smm-grip">
       <div class="badge">◷</div>
-      <div><strong>Редактор дат товаров</strong><small>${SITE} · Quick Edit · v1.1.0</small></div>
+      <div><strong>Редактор дат товаров</strong><small>${SITE} · Quick Edit · v1.2.0</small></div>
       <div class="spacer"></div><button class="iconbtn" id="smm-collapse" title="Свернуть/развернуть" type="button">−</button>
     </div>
     <div class="main">
@@ -526,7 +526,9 @@ function initializeDateManager(root, context) {
       }
       if (!row.querySelector('.editinline')) return false;
       const imported = document.importNode(row,true);
-      list.replaceChildren(imported);
+      // Do not remove WordPress's hidden Quick Edit/Bulk Edit templates.
+      const templates = [...list.querySelectorAll('#inline-edit,#bulk-edit')];
+      list.replaceChildren(imported,...templates);
       const inlineMeta = parsed.getElementById('inline_' + id);
       if (inlineMeta && !document.getElementById('inline_' + id)) imported.append(document.importNode(inlineMeta,true));
       log('ID '+id+': строка товара найдена через fetch без полной загрузки страницы');
@@ -585,6 +587,10 @@ function initializeDateManager(root, context) {
     } finally { busy = false; draw(); }
   }
   function start(limit = null) {
+    if (window.__SMM_RANDOM_DATES__) {
+      log('Обнаружен старый отдельный smmmaster_random_dates.user.js. Отключите его в Tampermonkey, чтобы избежать двойной обработки.', 'error');
+      return;
+    }
     const courseState = GM_getValue('bwo.wc.course.product.v1.'+SITE, null);
     if (courseState?.running) { log('Редактор курсов сейчас выполняет обновления на этом сайте. Дождитесь завершения.', 'error'); return; }
     if (!state.ids.length) { log('Сначала загрузите список ID', 'error'); return; }
