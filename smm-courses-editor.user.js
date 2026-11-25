@@ -92,9 +92,12 @@
   function activeLease(id){const l=GM_getValue(workerKey(id)+'.lease',null);return !!(l && l.expires>Date.now());}
   function poolBusy(pool=currentPool()){
     return !!(pool && (pool.workers.some(activeLease) ||
-      Date.now()-pool.createdAt<20000 && pool.workers.some(id=>{
+      pool.workers.some(id=>{
         const x=GM_getValue(workerKey(id),null);
-        return x?.run===pool.run && x.rows?.some(r=>r.status==='pending'||ACTIVE.has(r.status));
+        if(x?.run!==pool.run)return false;
+        const recentlyActive=Date.now()-Date.parse(x.updated||0)<120000;
+        return (Date.now()-pool.createdAt<20000 || recentlyActive && x.running) &&
+          x.rows?.some(r=>r.status==='pending'||ACTIVE.has(r.status));
       })));
   }
   function mergedCourseState(){
@@ -696,11 +699,12 @@
   }
   function csv(rows){return '\uFEFF'+rows.map(row=>row.map(cell=>{let s=String(cell??'');if(/^\s*[=+@-]/.test(s))s="'"+s;return '"'+s.replace(/"/g,'""')+'"';}).join(';')).join('\r\n');}
   function exportReport(){
+    if(!IS_COURSE_WORKER)state=mergedCourseState();
     const header=['Excel Row','Product ID','Name','Edit URL','Description','Regular price','lessons','img','Status','Message','Checked At','Original name','Original slug','Original price','Original lessons','Original image','Saved image','Saved WordPress attachment ID','Excel price (source)'];
     const rows=state.rows.map(r=>[r.excelRow,r.id,r.name,r.url,r.description,r.price,r.lessons,r.img,STATUSES[r.status],r.message,r.checked,r.before?.name,r.before?.slug,r.before?.price,r.before?.lessons,r.before?.image,r.actual?.image,r.actual?.attachmentId,r.rawPrice]);
     download(csv([header,...rows]),`${SITE}-woo-products-report.csv`,'text/csv;charset=utf-8');
   }
-  function exportLog(){download(csv([['Time','Level','Excel Row','Product ID','Stage','Message'],...state.logs.map(x=>[x.time,x.level,x.row,x.id,x.stage,x.message])]),`${SITE}-woo-products-log.csv`,'text/csv;charset=utf-8');}
+  function exportLog(){if(!IS_COURSE_WORKER)state=mergedCourseState();download(csv([['Time','Level','Excel Row','Product ID','Stage','Message'],...state.logs.map(x=>[x.time,x.level,x.row,x.id,x.stage,x.message])]),`${SITE}-woo-products-log.csv`,'text/csv;charset=utf-8');}
   function notice(message){
     if(!panel)return;panel.querySelector('.wc-error')?.remove();const el=document.createElement('div');el.className='wc-error';const close=document.createElement('button');close.textContent='×';close.onclick=()=>el.remove();el.append(close,document.createTextNode(String(message)));panel.append(el);
   }
@@ -1619,15 +1623,16 @@ function initializeDateManager(root, context) {
       <div class="view hidden" id="settings"><label class="setting"><div>Параллельных потоков<small>От 1 до 5 рабочих вкладок. Каждая вкладка обрабатывает много курсов по очереди — новые вкладки не создаются для каждого товара.</small></div><input id="workers" type="number" min="1" max="5" step="1" value="1"></label><label class="setting"><div>Пауза между товарами<small>В секундах после проверки результата</small></div><input id="delay" type="number" min="1" max="60" value="3"></label><label class="setting"><input id="stopOnError" type="checkbox" checked><div>Останавливаться при ошибке<small>Рекомендуется: ошибка может оставить несохранённые изменения в редакторе</small></div></label><div class="setting"><div>Перемешивание Excel<small>Однократно при каждом импорте; исходные номера строк сохраняются</small></div><span class="tag done">Всегда</span></div><div class="setting"><div>Downloadable<small>Флажок снимается у каждого товара</small></div><span class="tag done">Всегда</span></div><button id="backup">↓ Резервная копия JSON</button></div>
       <div class="view help hidden" id="help"><h3>1. Подготовьте Excel</h3><p>Первая строка: <b>ID, Name, Description, Regular price, lessons, img</b>. ID — существующий post ID товара. Description — HTML, как в редакторе WordPress. Regular price может быть с € или запятой. lessons — целое положительное число. img — 14-значное имя уже загруженной фотографии в Media Library (не внутренний attachment ID).</p>
       <h3>2. Импортируйте товары</h3><ol><li>Войдите в <b>${esc(SITE)}</b> как администратор.</li><li>Откройте «Импорт Excel», выберите файл, лист и шесть колонок.</li><li>Нажмите «Загрузить в очередь». Курсы будут перемешаны; номера исходных строк останутся в отчёте.</li><li>Нажмите «Один товар» и проверьте сохранённые поля на сайте; после этого нажмите «Начать» для остальных.</li></ol>
-      <h3>3. Что делает скрипт</h3><p>Открывает <code>/wp-admin/post.php?post=ID&amp;action=edit</code>. Заполняет Name и slug, переключает редактор Description в Text, вставляет HTML и возвращается в Visual. Меняет Regular price и ACF lessons, снимает Downloadable, удаляет старую обложку, ищет точную фотографию по img и нажимает Set product image. После проверки полей нажимает Update и перезагружает товар для сверки.</p>
-      <h3>4. Пауза, ошибки и безопасность</h3><p>Не редактируйте страницу вручную во время работы. Пауза останавливает новые действия, но не отменяет отправленный Update. После сохранения статус «Выполнено» ставится только после сверки на новой странице. Если данные не совпали — «Проверить», повторный Update автоматически не выполняется. Для такого товара доступна проверка без Update через «⋯».</p><p>Если произошла ошибка, исправьте причину, затем «Повторить ошибки». Неверные строки Excel исправляются только повторным импортом. Скачивайте отчёт и журнал. Очереди и настройки независимы для каждого сайта: <b>smmmaster.net, hottestcourse.com, learnmarket.net, profcourse.com, bestsocials.online</b>.</p>
+      <h3>3. Как работают потоки</h3><p>На вкладке «Настройки» выберите от 1 до 5 потоков. Один поток использует одну рабочую вкладку и последовательно обрабатывает все назначенные курсы. Например, для 400 товаров и 5 потоков создаётся пять вкладок примерно по 80 товаров. Все следующие товары открываются переходом в тех же вкладках. Не закрывайте рабочие вкладки до завершения.</p>
+      <h3>4. Что делает скрипт</h3><p>Открывает <code>/wp-admin/post.php?post=ID&amp;action=edit</code>. Заполняет Name и slug, переключает редактор Description в Text, вставляет HTML и возвращается в Visual. Меняет Regular price и ACF lessons, снимает Downloadable, удаляет старую обложку, ищет точную фотографию по img и нажимает Set product image. После проверки полей нажимает Update и перезагружает товар для сверки.</p>
+      <h3>5. Пауза, ошибки и безопасность</h3><p>Не редактируйте страницу вручную во время работы. Пауза останавливает новые действия, но не отменяет отправленный Update. После сохранения статус «Выполнено» ставится только после сверки на новой странице. Если данные не совпали — «Проверить», повторный Update автоматически не выполняется. Для такого товара доступна проверка без Update через «⋯».</p><p>Если произошла ошибка, исправьте причину, затем «Повторить ошибки». Неверные строки Excel исправляются только повторным импортом. Скачивайте отчёт и журнал. Очереди и настройки независимы для каждого сайта: <b>smmmaster.net, hottestcourse.com, learnmarket.net, profcourse.com, bestsocials.online</b>.</p>
       <h3>Ограничения</h3><p>Скрипт рассчитан на Classic WordPress / WooCommerce и указанные элементы ACF. В отдельных темах или версиях админки разметка может отличаться. При отсутствии нужных полей скрипт останавливается до Update.</p></div>
       <footer class="foot"><span id="updated">Очередь хранится локально</span><button id="prev">←</button><span id="pages" style="flex:none">1 / 1</span><button id="next">→</button></footer></div><div class="body hidden" id="date-content"></div></section>`;
     panel=$('panel');
     const on=(id,ev,fn)=>$(id).addEventListener(ev,fn);
     on('start','click',()=>launchCourse(false));on('one','click',()=>launchCourse(true));on('pause','click',()=>stopCourseFromPanel(true));on('stop','click',()=>stopCourseFromPanel(false));
     on('retry','click',retryErrors);on('report','click',exportReport);on('downloadLog','click',exportLog);on('reset','click',resetAll);
-    on('load','click',loadQueue);on('backup','click',()=>download(JSON.stringify(state,null,2),`${SITE}-woo-products-backup.json`,'application/json'));
+    on('load','click',loadQueue);on('backup','click',()=>download(JSON.stringify(IS_COURSE_WORKER?state:mergedCourseState(),null,2),`${SITE}-woo-products-backup.json`,'application/json'));
     on('file','change',e=>readFile(e.target.files[0]));on('sheet','change',setMapping);
     const drop=$('drop');drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('over');});drop.addEventListener('dragleave',()=>drop.classList.remove('over'));drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('over');readFile(e.dataTransfer.files[0]);});
     root.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>switchTab(b.dataset.tab)));
