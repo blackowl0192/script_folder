@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.5.1
+// @version      1.5.2
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -48,7 +48,7 @@
 
 (() => {
   'use strict';
-  const SCRIPT_VERSION='1.5.1';
+  const SCRIPT_VERSION='1.5.2';
   const HOSTS = new Set(['smmmaster.net', 'hottestcourse.com', 'learnmarket.net', 'profcourse.com', 'bestsocials.online']);
   const SITE = location.hostname.replace(/^www\./, '');
   if (location.protocol !== 'https:' || !HOSTS.has(SITE)) return;
@@ -214,6 +214,7 @@
     return result;
   }
   let tabId,root,panel,workbook=null,importFile='',working=false,leaving=false,halted=false,single=false,leaseTimer;
+  let postedFromThisDocument=false;
   let tab='import',page=0,filter='all',search='',maximized=false;
   const $ = id=>root.getElementById(id);
 
@@ -642,10 +643,11 @@
     if(resolved.protocol!==location.protocol || resolved.hostname.replace(/^www\./,'')!==SITE)
       throw error('Запрещён переход на другой сайт.',true);
     resolved.host=location.host;
-    if(kind==='verify'){
-      // Native WordPress normally removes its unsaved-form guard on submit.
-      // The one-request fetch save does not fire that submit handler.
-      // Disable only the core classic-editor confirmation after the POST has returned.
+    if(kind==='verify'||postedFromThisDocument){
+      // We have already sent this page's WordPress form via fetch.
+      // Classic Editor's pending-changes guard would otherwise block
+      // the next course even though Update was submitted and checked.
+      // Disable only the core WordPress namespace, not unrelated handlers.
       try{unsafeWindow.jQuery?.(unsafeWindow).off('beforeunload.edit-post');}catch(ex){
         console.warn('[SMM Course Manager] WP beforeunload cleanup:',ex);
       }
@@ -822,6 +824,7 @@
           r.saveAt=Date.now();r.saveDoc=DOC;state.stopAfterVerify=single;persist();
           guard();
           await submitWooUpdate(form,button,r);
+          postedFromThisDocument=true;
           // Keeping the manager alive during POST avoids the lost-page event
           // that blocked processing after a native button.click() navigation.
           if(halted)state.stopAfterVerify=true;
@@ -1970,7 +1973,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.5.1</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.5.2</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
