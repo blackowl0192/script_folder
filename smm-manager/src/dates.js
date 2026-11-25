@@ -549,6 +549,11 @@ function initializeDateManager(root, context) {
     busy = true;
     try {
       while (state.status === 'running' && state.index < state.ids.length) {
+        if (unsafeWindow.__SMM_RANDOM_DATES__ || window.__SMM_RANDOM_DATES__) {
+          state.status = 'paused'; save();
+          log('Найден активный старый скрипт редактора дат. Отключите smmmaster_random_dates.user.js в Tampermonkey.', 'error');
+          break;
+        }
         const id = state.ids[state.index];
         const visibleId = new URLSearchParams(location.search).get('s') || '';
         if (visibleId !== id) {
