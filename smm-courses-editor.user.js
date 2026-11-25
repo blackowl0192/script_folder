@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.3.8
+// @version      1.3.9
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -48,7 +48,7 @@
 
 (() => {
   'use strict';
-  const SCRIPT_VERSION='1.3.8';
+  const SCRIPT_VERSION='1.3.9';
   const HOSTS = new Set(['smmmaster.net', 'hottestcourse.com', 'learnmarket.net', 'profcourse.com', 'bestsocials.online']);
   const SITE = location.hostname.replace(/^www\./, '');
   if (location.protocol !== 'https:' || !HOSTS.has(SITE)) return;
@@ -121,6 +121,8 @@
   const KEY = IS_COURSE_WORKER ? workerKey(WORKER_ID) : MASTER_KEY;
   const LEASE = `${KEY}.lease`;
   const TICKET = `${KEY}.nav`;
+  // A stable identity that survives WordPress POST/redirect for each named worker tab.
+  const WORKER_TAB_SESSION = `${KEY}.tab-identity`;
   const COMMAND = `${KEY}.command`;
   const MODE_KEY = `${MASTER_KEY}.ui.mode`;
   const ALIAS = {id:['id','postid','productid'],name:['name','title','productname'],description:['description','content','info'],price:['regularprice','price'],lessons:['lessons','lesson'],img:['img','image','photo']};
@@ -565,6 +567,12 @@
         if(i<0){state.running=false;state.index=-1;state.phase='idle';persist();log('ok','Очередь завершена. Скачайте отчёт.');break;}
         state.index=i;const r=state.rows[i];
         try{
+          if(['saving','verifying'].includes(r.status)&&!r.expected){
+            r.status='review';
+            r.message='Нет данных для проверки прежнего Update. Повторная отправка заблокирована.';
+            state.running=false;state.paused=true;state.phase='idle';persist();
+            log('error',r.message,r);pauseOtherCourseWorkers();break;
+          }
           if(productIDFromURL(location.href)!==r.id){stage(r,'opening','Открываем товар WooCommerce');nav(r.url,'open');return;}
           await editorReady(['saving','verifying'].includes(r.status));
           if(r.expected&&['saving','verifying'].includes(r.status)){
@@ -639,7 +647,10 @@
           // document; a failed save will be marked 'review' without duplicate submissions.
           await sleep(14000);
           if(halted)state.stopAfterVerify=true;
-          if(!leaving){leaving=true;persist();location.assign(r.url);}
+          if(!leaving){
+            log('warn','WordPress не перешёл автоматически после Update. Открываю свежую страницу товара в той же вкладке для проверки. Повторного Update не будет.',r);
+            leaving=true;persist();location.replace(r.url);
+          }
           return;
         }catch(ex){
           if(ex===STOP)throw ex;
@@ -1727,7 +1738,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.8</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.9</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
@@ -1801,7 +1812,9 @@ function initializeDateManager(root, context) {
     bootStarted=true;
     try{
     const tabData=data&&typeof data==='object'?data:{};
-    tabId=tabData.wcCourseProductTabId||uid();
+    const savedWorkerId=IS_COURSE_WORKER?sessionStorage.getItem(WORKER_TAB_SESSION):null;
+    tabId=savedWorkerId||tabData.wcCourseProductTabId||uid();
+    if(IS_COURSE_WORKER)sessionStorage.setItem(WORKER_TAB_SESSION,tabId);
     tabData.wcCourseProductTabId=tabId;
     try{GM_saveTab(tabData);}catch(err){console.warn('[SMM Course Manager] GM_saveTab:',err);}
     let ticket;try{ticket=JSON.parse(sessionStorage.getItem(TICKET)||'null');}catch{ticket=null;}
@@ -1827,6 +1840,12 @@ function initializeDateManager(root, context) {
     }else if(IS_COURSE_WORKER&&ticket&&row&&ticket.tab===tabId&&ticket.run===state.run&&ticket.id===row.id&&Date.now()-ticket.at<180000){
       log('info','Новая страница в том же рабочем потоке: продолжаем очередь.',row);
       await start(state.single,true);
+    }else if(IS_COURSE_WORKER&&state.running&&row&&
+      ['saving','verifying'].includes(row.status)&&row.expected&&
+      productIDFromURL(location.href)===row.id&&currentPool()?.run===state.run){
+      // Ticket can be lost across WP redirects; verify only, never re-submit Update.
+      log('warn','Билет перехода не восстановился. Проверяю сохранение на открытой странице без повторного Update.',row);
+      await start(state.single,true);
     }else if(IS_COURSE_WORKER&&state.running){
       state.running=false;state.paused=true;persist();
       log('warn','Автопереход не подтверждён. Поток приостановлен; дальнейшие Update не выполняются.',row);
@@ -1838,9 +1857,7 @@ function initializeDateManager(root, context) {
     if(typeof GM_getTab==='function')GM_getTab(data=>{bootManager(data).catch(fatalLauncher);});
     else bootManager({}).catch(fatalLauncher);
   }catch(err){bootManager({}).catch(fatalLauncher);}
-  // Dashboard pages must be operable even if GM_getTab callback is unavailable.
-  // Do not use the fallback on workers; that could break navigation tickets.
-  if(!IS_COURSE_WORKER && SMM_PARAMS.get('smm_manager')!=='date-worker'){
-    setTimeout(()=>{if(!bootStarted)bootManager({}).catch(fatalLauncher);},3500);
-  }
+  // Use the same boot fallback on workers: GM_getTab callback can fail after WP redirects.
+  // Worker identity and the ticket survive via sessionStorage.
+  setTimeout(()=>{if(!bootStarted)bootManager({}).catch(fatalLauncher);},3500);
 })();
