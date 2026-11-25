@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.1.0
+// @version      1.1.1
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -57,7 +57,9 @@
   const IS_DASHBOARD = SMM_PARAMS.get('smm_manager') === 'dashboard';
   const COURSE_WORKER_SESSION = 'smm.manager.course.worker.' + SITE;
   if (SMM_PARAMS.get('smm_manager') === 'course-worker') sessionStorage.setItem(COURSE_WORKER_SESSION, '1');
-  const IS_COURSE_WORKER = sessionStorage.getItem(COURSE_WORKER_SESSION) === '1';
+  const IS_COURSE_WORKER = SMM_PARAMS.get('smm_manager') !== 'dashboard' &&
+    (SMM_PARAMS.get('smm_manager') === 'course-worker' ||
+      (window.name === 'smm-manager-courses-' + SITE && sessionStorage.getItem(COURSE_WORKER_SESSION) === '1'));
   const KEY = `bwo.wc.course.product.v1.${SITE}`;
   const LEASE = `${KEY}.lease`;
   const TICKET = `${KEY}.nav`;
@@ -532,6 +534,10 @@
   async function start(oneOnly=false,automatic=false){
     if(working){notice('Очередь уже выполняется.');return;}
     state=GM_getValue(KEY,empty());
+    if(GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.status==='running'){
+      log('error','Редактор дат выполняет задачи на этом сайте. Одновременные изменения заблокированы.');
+      return;
+    }
     try{
       authCheck();await acquire();halted=false;
       single=automatic?!!state.single:oneOnly;
@@ -705,13 +711,16 @@
     GM_setValue(MODE_KEY,chosen);
   }
   function openDashboard(){
-    const url=ORIGIN+'/wp-admin/edit.php?post_type=product&smm_manager=dashboard';
+    const url=ORIGIN+'/wp-admin/index.php?smm_manager=dashboard';
     const w=window.open(url,'smm-manager-dashboard-'+SITE);
     if(!w)notice('Браузер заблокировал новую вкладку. Разрешите всплывающие окна для сайта.');
   }
   function launchCourse(oneOnly){
     if(working){notice('Редактор курсов уже выполняет задачу.');return;}
     const fresh=GM_getValue(KEY,empty());
+    if(GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.status==='running'){
+      notice('Редактор дат выполняет обновления на этом сайте. Сначала поставьте его на паузу.');return;
+    }
     const lease=GM_getValue(LEASE,null);
     if(lease&&lease.expires>Date.now()){notice('Очередь курсов уже запущена в другой вкладке.');return;}
     const row=fresh.rows.find(r=>r.status==='pending'||ACTIVE.has(r.status));
@@ -758,10 +767,14 @@ function initializeDateManager(root, context) {
   window.__SMM_MANAGER_DATES__ = true;
   const params = new URLSearchParams(location.search);
   const DATE_WORKER_SESSION = 'smm.manager.date.worker.' + SITE;
-  if (params.get('smm_manager') === 'date-worker') sessionStorage.setItem(DATE_WORKER_SESSION, '1');
-  const IS_DATE_WORKER = sessionStorage.getItem(DATE_WORKER_SESSION) === '1';
   const workerURL = ORIGIN + '/wp-admin/edit.php?post_type=product&smm_manager=date-worker';
   const workerName = 'smm-manager-dates-' + SITE;
+  if (params.get('smm_manager') === 'date-worker') {
+    window.name = workerName;
+    sessionStorage.setItem(DATE_WORKER_SESSION, '1');
+  }
+  const IS_DATE_WORKER = params.get('smm_manager') !== 'dashboard' &&
+    window.name === workerName && sessionStorage.getItem(DATE_WORKER_SESSION) === '1';
 
   const STORAGE = 'bwo.smm.dates.v2.' + SITE;
   const LEGACY_STORAGE = 'smmmaster_dates_v1_state';
@@ -780,7 +793,7 @@ function initializeDateManager(root, context) {
     ids: [], index: 0, status: 'idle', phase: 'search',
     records: [], notes: [], lastMessage: 'Загрузите файл с ID',
     batchRemaining: null, dateCandidate: null, source: '',
-    missStreak: 0, delayMs: 350, fastMode: true, dryRun: false,
+    missStreak: 0, delayMs: 350, fastMode: false, dryRun: false,
     dateFrom: DEFAULT_DATE_FROM, dateTo: DEFAULT_DATE_TO,
     lastChanged: Date.now()
   });
@@ -979,7 +992,7 @@ function initializeDateManager(root, context) {
       <div class="row" style="margin-top:7px"><button id="smm-report" type="button" class="green">↓ Отчет XLSX</button><button id="smm-missing-csv" type="button">↓ Нет ID (CSV)</button><button id="smm-reset" type="button" class="danger">↺ Сброс</button></div>
       <label class="caption">История операций</label><div class="log" id="smm-log" aria-live="polite"></div>
       <div class="options" style="margin-top:9px"><label>Пауза между ID (мс) <input id="smm-delay" type="number" min="200" max="15000" step="50" style="width:100px" /></label></div>
-      <div class="options"><label><input id="smm-fast" type="checkbox" /> Ускоренный поиск без полной загрузки страницы (с автоматическим резервным режимом)</label></div>
+      <div class="options"><label><input id="smm-fast" type="checkbox" /> Ускоренный поиск (включать после теста 3 ID; есть резервный режим)</label></div>
       <div class="sub">Случайная дата внутри диапазона; 00:00 исключено. При 5 последовательных отсутствующих ID — автопауза. Отключите старую отдельную версию редактора дат.</div>
       </div>
       <div id="smm-date-processed" class="hidden"><h3>Обработанные товары</h3><div id="smm-result-table"></div></div>
@@ -1198,12 +1211,12 @@ function initializeDateManager(root, context) {
       return;
     }
     const verified = verifyPostDate(id, date);
-    if (verified === false) {
+    if (verified !== true) {
       state.status = 'paused'; state.phase = 'saving';
-      log(`ID ${id}: ответ Update получен, но дата в таблице отличается. Проверьте товар вручную; автоматизация остановлена.`, 'error');
+      log(`ID ${id}: Update отправлен, но ${verified === false?'дата отличается':'сервер не вернул дату для проверки'}. Проверьте товар вручную; автоматизация остановлена.`, 'error');
       save(); return;
     }
-    finish('updated', verified === true ? 'дата сохранена и проверена' : 'Update подтвержден WordPress', date.text);
+    finish('updated', 'дата сохранена и проверена', date.text);
   }
   async function searchId(id) {
     const field = document.getElementById('post-search-input');
@@ -1211,7 +1224,7 @@ function initializeDateManager(root, context) {
     if (!field || !submit) throw new Error('Не найдена строка поиска #post-search-input / #search-submit');
     // WordPress keeps a hidden Quick Edit template inside the GET form.
     // Disable its controls so post_title, prices and nonce do not leak into search URLs.
-    $('#inline-edit input, #inline-edit select, #inline-edit textarea, #bulk-edit input, #bulk-edit select, #bulk-edit textarea', document).forEach(el => {el.disabled = true;});
+    document.querySelectorAll('#inline-edit input, #inline-edit select, #inline-edit textarea, #bulk-edit input, #bulk-edit select, #bulk-edit textarea').forEach(el => {el.disabled = true;});
     // Remove previous query. The search form navigates to the server's result page.
     setInputValue(field, '');
     setInputValue(field, id);
@@ -1238,7 +1251,7 @@ function initializeDateManager(root, context) {
       const url = ORIGIN + '/wp-admin/edit.php?post_type=product&s=' + encodeURIComponent(id);
       const response = await fetch(url,{credentials:'same-origin',cache:'no-store',redirect:'follow',signal:AbortSignal.timeout(18000)});
       if (!response.ok || response.url.includes('wp-login.php')) throw new Error('Нет доступа к поиску товаров');
-      const html = (await response.text()).replace(/<img\\b[^>]*>/gi,'');
+      const html = (await response.text()).replace(/<img\b[^>]*>/gi,'');
       const parsed = new DOMParser().parseFromString(html,'text/html');
       if (!parsed.querySelector('#the-list') || parsed.querySelector('#loginform')) throw new Error('Неполный HTML списка WordPress');
       const row = parsed.getElementById('post-' + id);
@@ -1307,6 +1320,8 @@ function initializeDateManager(root, context) {
     } finally { busy = false; draw(); }
   }
   function start(limit = null) {
+    const courseState = GM_getValue('bwo.wc.course.product.v1.'+SITE, null);
+    if (courseState?.running) { log('Редактор курсов сейчас выполняет обновления на этом сайте. Дождитесь завершения.', 'error'); return; }
     if (!state.ids.length) { log('Сначала загрузите список ID', 'error'); return; }
     if (state.index >= state.ids.length) { log('Все ID обработаны. Сбросьте или загрузите новый список.'); return; }
     if (!dateRange()) { log('Укажите корректный диапазон дат: дата «От» не позже даты «До».', 'error'); return; }
@@ -1443,7 +1458,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>Редактор курсов для SMM курсов</b><small>${esc(SITE)} · v1.1.0</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>Редактор курсов для SMM курсов</b><small>${esc(SITE)} · v1.1.1</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><button data-module="courses" class="active">1. Редактор курсов</button><button data-module="dates">2. Редактор дат</button><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
