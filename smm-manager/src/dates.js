@@ -5,10 +5,14 @@ function initializeDateManager(root, context) {
   window.__SMM_MANAGER_DATES__ = true;
   const params = new URLSearchParams(location.search);
   const DATE_WORKER_SESSION = 'smm.manager.date.worker.' + SITE;
-  if (params.get('smm_manager') === 'date-worker') sessionStorage.setItem(DATE_WORKER_SESSION, '1');
-  const IS_DATE_WORKER = sessionStorage.getItem(DATE_WORKER_SESSION) === '1';
   const workerURL = ORIGIN + '/wp-admin/edit.php?post_type=product&smm_manager=date-worker';
   const workerName = 'smm-manager-dates-' + SITE;
+  if (params.get('smm_manager') === 'date-worker') {
+    window.name = workerName;
+    sessionStorage.setItem(DATE_WORKER_SESSION, '1');
+  }
+  const IS_DATE_WORKER = params.get('smm_manager') !== 'dashboard' &&
+    window.name === workerName && sessionStorage.getItem(DATE_WORKER_SESSION) === '1';
 
   const STORAGE = 'bwo.smm.dates.v2.' + SITE;
   const LEGACY_STORAGE = 'smmmaster_dates_v1_state';
@@ -27,7 +31,7 @@ function initializeDateManager(root, context) {
     ids: [], index: 0, status: 'idle', phase: 'search',
     records: [], notes: [], lastMessage: 'Загрузите файл с ID',
     batchRemaining: null, dateCandidate: null, source: '',
-    missStreak: 0, delayMs: 350, fastMode: true, dryRun: false,
+    missStreak: 0, delayMs: 350, fastMode: false, dryRun: false,
     dateFrom: DEFAULT_DATE_FROM, dateTo: DEFAULT_DATE_TO,
     lastChanged: Date.now()
   });
@@ -226,7 +230,7 @@ function initializeDateManager(root, context) {
       <div class="row" style="margin-top:7px"><button id="smm-report" type="button" class="green">↓ Отчет XLSX</button><button id="smm-missing-csv" type="button">↓ Нет ID (CSV)</button><button id="smm-reset" type="button" class="danger">↺ Сброс</button></div>
       <label class="caption">История операций</label><div class="log" id="smm-log" aria-live="polite"></div>
       <div class="options" style="margin-top:9px"><label>Пауза между ID (мс) <input id="smm-delay" type="number" min="200" max="15000" step="50" style="width:100px" /></label></div>
-      <div class="options"><label><input id="smm-fast" type="checkbox" /> Ускоренный поиск без полной загрузки страницы (с автоматическим резервным режимом)</label></div>
+      <div class="options"><label><input id="smm-fast" type="checkbox" /> Ускоренный поиск (включать после теста 3 ID; есть резервный режим)</label></div>
       <div class="sub">Случайная дата внутри диапазона; 00:00 исключено. При 5 последовательных отсутствующих ID — автопауза. Отключите старую отдельную версию редактора дат.</div>
       </div>
       <div id="smm-date-processed" class="hidden"><h3>Обработанные товары</h3><div id="smm-result-table"></div></div>
@@ -445,12 +449,12 @@ function initializeDateManager(root, context) {
       return;
     }
     const verified = verifyPostDate(id, date);
-    if (verified === false) {
+    if (verified !== true) {
       state.status = 'paused'; state.phase = 'saving';
-      log(`ID ${id}: ответ Update получен, но дата в таблице отличается. Проверьте товар вручную; автоматизация остановлена.`, 'error');
+      log(`ID ${id}: Update отправлен, но ${verified === false?'дата отличается':'сервер не вернул дату для проверки'}. Проверьте товар вручную; автоматизация остановлена.`, 'error');
       save(); return;
     }
-    finish('updated', verified === true ? 'дата сохранена и проверена' : 'Update подтвержден WordPress', date.text);
+    finish('updated', 'дата сохранена и проверена', date.text);
   }
   async function searchId(id) {
     const field = document.getElementById('post-search-input');
@@ -458,7 +462,7 @@ function initializeDateManager(root, context) {
     if (!field || !submit) throw new Error('Не найдена строка поиска #post-search-input / #search-submit');
     // WordPress keeps a hidden Quick Edit template inside the GET form.
     // Disable its controls so post_title, prices and nonce do not leak into search URLs.
-    $('#inline-edit input, #inline-edit select, #inline-edit textarea, #bulk-edit input, #bulk-edit select, #bulk-edit textarea', document).forEach(el => {el.disabled = true;});
+    document.querySelectorAll('#inline-edit input, #inline-edit select, #inline-edit textarea, #bulk-edit input, #bulk-edit select, #bulk-edit textarea').forEach(el => {el.disabled = true;});
     // Remove previous query. The search form navigates to the server's result page.
     setInputValue(field, '');
     setInputValue(field, id);
@@ -485,7 +489,7 @@ function initializeDateManager(root, context) {
       const url = ORIGIN + '/wp-admin/edit.php?post_type=product&s=' + encodeURIComponent(id);
       const response = await fetch(url,{credentials:'same-origin',cache:'no-store',redirect:'follow',signal:AbortSignal.timeout(18000)});
       if (!response.ok || response.url.includes('wp-login.php')) throw new Error('Нет доступа к поиску товаров');
-      const html = (await response.text()).replace(/<img\\b[^>]*>/gi,'');
+      const html = (await response.text()).replace(/<img\b[^>]*>/gi,'');
       const parsed = new DOMParser().parseFromString(html,'text/html');
       if (!parsed.querySelector('#the-list') || parsed.querySelector('#loginform')) throw new Error('Неполный HTML списка WordPress');
       const row = parsed.getElementById('post-' + id);
@@ -554,6 +558,8 @@ function initializeDateManager(root, context) {
     } finally { busy = false; draw(); }
   }
   function start(limit = null) {
+    const courseState = GM_getValue('bwo.wc.course.product.v1.'+SITE, null);
+    if (courseState?.running) { log('Редактор курсов сейчас выполняет обновления на этом сайте. Дождитесь завершения.', 'error'); return; }
     if (!state.ids.length) { log('Сначала загрузите список ID', 'error'); return; }
     if (state.index >= state.ids.length) { log('Все ID обработаны. Сбросьте или загрузите новый список.'); return; }
     if (!dateRange()) { log('Укажите корректный диапазон дат: дата «От» не позже даты «До».', 'error'); return; }
