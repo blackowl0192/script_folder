@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.3.4
+// @version      1.3.5
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -52,6 +52,24 @@
   const SITE = location.hostname.replace(/^www\./, '');
   if (location.protocol !== 'https:' || !HOSTS.has(SITE)) return;
   const ORIGIN = location.origin;
+  // A small emergency launcher remains visible if the main UI fails to initialize.
+  // It is removed after the full panel has mounted successfully.
+  const bootLauncher=document.createElement('button');
+  bootLauncher.id='bwo-smm-manager-boot';
+  bootLauncher.textContent='SMM Manager · Открыть';
+  bootLauncher.style.cssText='all:initial!important;box-sizing:border-box!important;position:fixed!important;right:16px!important;bottom:16px!important;z-index:2147483647!important;padding:12px 16px!important;border-radius:12px!important;background:#153d77!important;color:#fff!important;font:600 13px system-ui,sans-serif!important;cursor:pointer!important;box-shadow:0 5px 20px #001a3f75!important';
+  document.documentElement.append(bootLauncher);
+  function fatalLauncher(err){
+    const message=String(err?.message||err||'Неизвестная ошибка');
+    console.error('[SMM Course Manager] Сбой панели:',err);
+    bootLauncher.textContent='SMM Manager · Ошибка запуска';
+    bootLauncher.title=message;
+    bootLauncher.onclick=()=>{
+      if(panel&&root){panel.classList.remove('hidden');root.getElementById('pill')?.classList.add('hidden');}
+      else alert('Не удалось открыть панель SMM Manager.\n'+message+'\nПроверьте ошибки в консоли браузера (F12).');
+    };
+  }
+  bootLauncher.onclick=()=>{if(panel&&root){panel.classList.remove('hidden');root.getElementById('pill')?.classList.add('hidden');}};
   // Excel is optional at startup: an unavailable CDN must never hide the manager UI.
   const XLSX_URL='https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
   let sheetLib=null, sheetLoading=null;
@@ -1680,7 +1698,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.4</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.5</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
@@ -1736,7 +1754,9 @@ function initializeDateManager(root, context) {
       $('dashboard').textContent='Панель открыта отдельно';
       $('dashboard').disabled=true;
     } else if(IS_COURSE_WORKER || SMM_PARAMS.get('smm_manager')==='date-worker') {
+      // Workers use the compact launcher while editing, but retain a visible way to show the full panel.
       panel.classList.add('hidden');$('pill').classList.remove('hidden');
+      $('pill').textContent='SMM Manager · Открыть панель';
     }
     selectModule(GM_getValue(MODE_KEY,'courses'));
     render();if(state.rows.length)switchTab('queue');
@@ -1746,11 +1766,19 @@ function initializeDateManager(root, context) {
     window.addEventListener('error',e=>{if(e.message)record(e.message);},true);
     window.addEventListener('unhandledrejection',e=>record(String(e.reason?.message||e.reason||'Unhandled rejection')));
   }
-  GM_getTab(async data=>{
-    tabId=data.wcCourseProductTabId||uid();data.wcCourseProductTabId=tabId;GM_saveTab(data);
+  let bootStarted=false;
+  async function bootManager(data={}){
+    if(bootStarted)return;
+    bootStarted=true;
+    try{
+    const tabData=data&&typeof data==='object'?data:{};
+    tabId=tabData.wcCourseProductTabId||uid();
+    tabData.wcCourseProductTabId=tabId;
+    try{GM_saveTab(tabData);}catch(err){console.warn('[SMM Course Manager] GM_saveTab:',err);}
     let ticket;try{ticket=JSON.parse(sessionStorage.getItem(TICKET)||'null');}catch{ticket=null;}
     sessionStorage.removeItem(TICKET);
     mount();captureErrors();
+    bootLauncher.remove();
     if(IS_COURSE_WORKER){
       GM_addValueChangeListener(COMMAND,(name,oldValue,newValue,remote)=>{
         if(remote&&working&&newValue?.run===state.run&&['pause','stop'].includes(newValue.kind))
@@ -1775,5 +1803,15 @@ function initializeDateManager(root, context) {
       state.running=false;state.paused=true;persist();
       log('warn','Автопереход не подтверждён. Поток приостановлен; дальнейшие Update не выполняются.',row);
     }
-  });
+    }catch(err){fatalLauncher(err);}
+  }
+  try{
+    if(typeof GM_getTab==='function')GM_getTab(data=>{bootManager(data).catch(fatalLauncher);});
+    else bootManager({}).catch(fatalLauncher);
+  }catch(err){bootManager({}).catch(fatalLauncher);}
+  // Dashboard pages must be operable even if GM_getTab callback is unavailable.
+  // Do not use the fallback on workers; that could break navigation tickets.
+  if(!IS_COURSE_WORKER && SMM_PARAMS.get('smm_manager')!=='date-worker'){
+    setTimeout(()=>{if(!bootStarted)bootManager({}).catch(fatalLauncher);},3500);
+  }
 })();
