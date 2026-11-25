@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YourCourse — Excel → Tutor LMS Enrollments
 // @namespace    https://yourcourse.shop/
-// @version      1.4.0
-// @description  Excel → курсы; первый найденный курс → Select; выбор 20–60 студентов; перетаскиваемая, сворачиваемая панель; Okay → следующий курс
+// @version      1.4.1
+// @description  Excel → курсы; первый найденный курс → Select; выбор 20–60 студентов; перетаскиваемая, сворачиваемая панель; Okay → следующий курс /
 // @author       YourCourse
 // @match        https://yourcourse.shop/wp-admin/admin.php*
 // @require      https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js
