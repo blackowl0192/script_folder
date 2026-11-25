@@ -510,7 +510,10 @@
       while(true){
         guard();
         let i=state.index;
-        if(i<0||!state.rows[i]||!ACTIVE.has(state.rows[i].status))i=state.rows.findIndex(x=>x.status==='pending');
+        if(i<0||!state.rows[i]||!ACTIVE.has(state.rows[i].status)){
+          i=state.rows.findIndex(x=>['saving','verifying'].includes(x.status)&&x.expected);
+          if(i<0)i=state.rows.findIndex(x=>x.status==='pending');
+        }
         if(i<0){state.running=false;state.index=-1;state.phase='idle';persist();log('ok','Очередь завершена. Скачайте отчёт.');break;}
         state.index=i;const r=state.rows[i];
         try{
@@ -523,7 +526,7 @@
             const actual=await snapshot(true);
             r.actual=actual;r.checked=new Date().toISOString();
             const diff=differences(actual,r.expected);
-            if(diff.length){r.status='review';r.message=`После сохранения не совпали: ${diff.join(', ')}. Повторный Update не отправлен.`;log('error',r.message,r);}
+            if(diff.length){r.status='review';r.message=`После сохранения не совпали: ${diff.join(', ')}. Повторный Update не отправлен.`;log('error',r.message,r);pauseOtherCourseWorkers();}
             else{r.status='done';r.message='Все значения подтверждены после перезагрузки';log('ok',r.message,r);}
             const stopNow=state.stopAfterVerify||single||halted||(r.status==='review'&&state.settings.stopOnError);
             state.stopAfterVerify=false;state.phase='idle';state.index=-1;persist();
@@ -594,6 +597,7 @@
           if(ex===STOP)throw ex;
           r.status=r.saveAt&&r.expected?'review':'error';r.message=ex.message||String(ex);
           state.phase='idle';state.index=-1;persist();log('error',r.message,r);
+          pauseOtherCourseWorkers();
           // A failed row may leave unsaved edits: stop instead of triggering a risky navigation.
           if(ex.fatal||halted||single||state.settings.stopOnError){state.running=false;persist();break;}
           // For non-stopping mode, navigate to the NEXT pending item from a clean page.
@@ -852,6 +856,15 @@
     }
     state=mergedCourseState();render();
     if(opened<amount)notice('Открыто '+opened+' из '+amount+' вкладок. Разрешите всплывающие окна для сайта.');
+  }
+  function pauseOtherCourseWorkers(){
+    if(!IS_COURSE_WORKER||!state.settings.stopOnError)return;
+    const pool=currentPool();
+    if(!pool||pool.run!==state.run)return;
+    for(const id of pool.workers){
+      if(id===WORKER_ID)continue;
+      GM_setValue(workerKey(id)+'.command',{kind:'pause',run:pool.run,at:Date.now(),id:uid()});
+    }
   }
   function stopCourseFromPanel(pause){
     if(IS_COURSE_WORKER){stop(pause);return;}
