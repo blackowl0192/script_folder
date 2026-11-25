@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.5.2
+// @version      1.6.0
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -25,7 +25,7 @@
 // @match        https://www.bestsocials.online/wp-login.php*
 // @updateURL   https://raw.githubusercontent.com/blackowl0192/script_folder/main/smm-courses-editor.user.js
 // @downloadURL https://raw.githubusercontent.com/blackowl0192/script_folder/main/smm-courses-editor.user.js
-// @run-at       document-idle
+// @run-at       document-end
 // @noframes
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -43,12 +43,15 @@
  * NOT the internal WordPress attachment ID. Images must already be in Media Library.
  * Queue is shuffled once on import. Original Excel row numbers stay in all reports.
  * No Update is submitted unless field checks pass; saved data is re-read on a fresh page.
- * Use a single browser tab. Excel and queue stay in local Tampermonkey storage.
+ * Use one dashboard tab plus 1–5 fixed named worker tabs; each worker
+ * navigates through its own assigned products in that same tab.
+ * Emergency stop is persisted in Tampermonkey storage per site and run.
+ * A POST already sent to WooCommerce cannot be cancelled; verification is GET-only.
  */
 
 (() => {
   'use strict';
-  const SCRIPT_VERSION='1.5.2';
+  const SCRIPT_VERSION='1.6.0';
   const HOSTS = new Set(['smmmaster.net', 'hottestcourse.com', 'learnmarket.net', 'profcourse.com', 'bestsocials.online']);
   const SITE = location.hostname.replace(/^www\./, '');
   if (location.protocol !== 'https:' || !HOSTS.has(SITE)) return;
@@ -2081,7 +2084,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.5.2</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.6.0</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
@@ -2096,7 +2099,7 @@ function initializeDateManager(root, context) {
       <div class="view help hidden" id="help"><h3>1. Подготовьте Excel</h3><p>Первая строка: <b>ID, Name, Description, Regular price, lessons, img</b>. ID — существующий post ID товара. Description — HTML, как в редакторе WordPress. Regular price может быть с € или запятой. lessons — целое положительное число. img — 14-значное имя уже загруженной фотографии в Media Library (не внутренний attachment ID).</p>
       <h3>2. Импортируйте товары</h3><ol><li>Войдите в <b>${esc(SITE)}</b> как администратор.</li><li>Откройте «Импорт Excel», выберите файл, лист и шесть колонок.</li><li>Нажмите «Загрузить в очередь». Курсы будут перемешаны; номера исходных строк останутся в отчёте.</li><li>Нажмите «Один товар» и проверьте сохранённые поля на сайте; после этого нажмите «Начать» для остальных.</li></ol>
       <h3>3. Как работают потоки</h3><p>На вкладке «Настройки» выберите 1–5 потоков. Ровно столько же рабочих вкладок открывается при старте. Каждая вкладка получает свою непересекающуюся часть очереди. После сохранения и проверки товара следующий открывается через <code>location.replace()</code> В ТОЙ ЖЕ вкладке; дополнительные вкладки для каждого товара не создаются. Например, 400 товаров в 5 потоков — пять вкладок примерно по 80 товаров. При переходе сохраняются служебные параметры номера потока и запуска. Не закрывайте вкладки до завершения или аварийной остановки.</p>
-      <h3>4. Что делает скрипт</h3><p>Открывает <code>/wp-admin/post.php?post=ID&amp;action=edit</code>. Заполняет Name и slug, переключает редактор Description в Text, вставляет HTML и возвращается в Visual. Меняет Regular price и ACF lessons, снимает Downloadable, удаляет старую обложку, ищет точную фотографию по img и нажимает Set product image. После проверки полей нажимает Update и перезагружает товар для сверки.</p>
+      <h3>4. Что делает скрипт</h3><p>Открывает <code>/wp-admin/post.php?post=ID&amp;action=edit</code>. Заполняет Name и slug, переключает Description в Text, вставляет HTML и возвращается в Visual. Меняет Regular price и ACF lessons, снимает Downloadable, меняет обложку через Media Library. После проверки отправляет один POST WordPress, затем отдельным GET сверяет сохранённые поля, не перезагружая редактор для проверки. Только при совпадении всех данных переходит к следующему товару в той же вкладке.</p>
       <h3>5. Пауза, ошибки и безопасность</h3><p><b>«АВАРИЙНЫЙ СТОП ВСЕХ»</b> доступен даже при зависании потоков. Он записывает общий запрет на новые действия в Tampermonkey, останавливает все рабочие вкладки и сохраняет очередь. Отправленный HTTP POST невозможно отменить — после остановки проверьте такие товары через GET. Кнопка также доступна слева внизу каждой рабочей вкладки и в меню Tampermonkey. Повторный запуск — только вручную, после прекращения активности вкладок.</p><p>Не редактируйте страницу вручную во время работы. Пауза останавливает новые действия, но не отменяет отправленный Update. После сохранения статус «Выполнено» ставится только после сверки на новой странице. Если данные не совпали — «Проверить», повторный Update автоматически не выполняется. Для такого товара доступна проверка без Update через «⋯».</p><p>Если произошла ошибка, исправьте причину, затем «Повторить ошибки». Неверные строки Excel исправляются только повторным импортом. Скачивайте отчёт и журнал. Очереди и настройки независимы для каждого сайта: <b>smmmaster.net, hottestcourse.com, learnmarket.net, profcourse.com, bestsocials.online</b>.</p>
       <h3>Ограничения</h3><p>Скрипт рассчитан на Classic WordPress / WooCommerce и указанные элементы ACF. В отдельных темах или версиях админки разметка может отличаться. При отсутствии нужных полей скрипт останавливается до Update.</p></div>
       <footer class="foot"><span id="updated">Очередь хранится локально</span><button id="prev">←</button><span id="pages" style="flex:none">1 / 1</span><button id="next">→</button></footer></div><div class="body hidden" id="date-content"></div></section>`;
@@ -2171,6 +2174,12 @@ function initializeDateManager(root, context) {
     sessionStorage.removeItem(TICKET);
     mount();captureErrors();
     if(IS_COURSE_WORKER){
+      const bootRow=state.rows[state.index];
+      log('info','Рабочая вкладка №'+WORKER_ID+' загружена: post_ID='+
+        (productIDFromURL(location.href)||'не определён')+
+        ', цель='+String(bootRow?.id||'ожидаем очередь')+
+        ', состояние='+String(bootRow?.status||'idle')+
+        ', document.readyState='+document.readyState+'.',bootRow);
       GM_addValueChangeListener(COMMAND,(name,oldValue,newValue,remote)=>{
         if(remote&&working&&!halted&&newValue?.run===state.run&&['pause','stop'].includes(newValue.kind))
           stop(newValue.kind==='pause');
