@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.3.6
+// @version      1.3.7
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -942,6 +942,31 @@
     notice((pause?'Пауза':'Стоп')+' отправлена для '+pool.workers.length+' потоков; активных: '+active+'.');
   }
 
+  const css=`
+    .module-nav{display:flex;gap:8px;padding:9px 14px;background:#eef3fb;border-bottom:1px solid #d6e1ef;align-items:center}
+    .module-actions{display:flex;gap:8px;flex-wrap:wrap}
+    .module-nav button{font-size:12px;padding:8px 12px;background:#fff}
+    .module-nav button.active{background:#2e64ce;color:#fff;border-color:#2e64ce}
+    .module-nav .spacer{flex:1}
+    .panel.dashboard{inset:0!important;top:0!important;right:0!important;bottom:0!important;left:0!important;width:100vw!important;height:100vh!important;max-height:none!important;max-width:none!important;border-radius:0!important;resize:none!important}
+
+    :host{all:initial;font:13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#182438;color-scheme:light}
+    *{box-sizing:border-box}button,input,select{font:inherit}button{background:#fff;color:#26354c;border:1px solid #d9e1eb;border-radius:9px;padding:8px 12px;cursor:pointer;font-weight:600}button:hover{background:#edf3fa;color:#182438}button:disabled{opacity:.44;cursor:default}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #4374e9;outline-offset:2px}
+    .panel{position:fixed;right:18px;bottom:18px;width:760px;height:680px;max-width:calc(100vw - 24px);max-height:calc(100vh - 36px);display:flex;flex-direction:column;border-radius:16px;box-shadow:0 18px 75px #12243a55;background:white;border:1px solid #d6dfed;overflow:hidden;resize:both}
+    .panel.full{inset:20px;width:auto;height:auto;max-height:none;max-width:none;resize:none}
+    .head{background:#14263e;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;cursor:move;touch-action:none}.logo{width:36px;height:36px;border-radius:10px;background:#3d74e5;display:grid;place-items:center;font-weight:800;font-size:18px}.head b{font-size:16px}.head small{display:block;color:#aec0d8;font-size:11px}.head .space{flex:1}.head button{color:#fff;background:#ffffff18;border-color:#ffffff20;padding:5px 10px}.head button:hover{color:#fff;background:#ffffff35}
+    .body{display:flex;flex-direction:column;min-height:0;flex:1}.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:13px 15px 9px}.stat{border:1px solid #e4e9f2;background:#fafcfe;border-radius:10px;padding:8px 10px}.stat b{display:block;font-size:21px;line-height:1.25}.stat small{font-size:11px;color:#718198}.stat.success b{color:#17855a}.stat.bad b{color:#b64e3d}.progress{height:5px;background:#e9f0fa;margin:0 15px;border-radius:6px;overflow:hidden}.progress i{display:block;background:#3c74e9;height:100%;transition:width .3s}
+    .current{padding:10px 15px;color:#5c718a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.actions{display:flex;gap:7px;flex-wrap:wrap;padding:0 15px 10px}.primary{background:#346cdf!important;border-color:#346cdf!important;color:white!important}.primary:hover{background:#2459c8!important}.danger{background:#fff7f5;color:#a3433c;border-color:#edc2bc}
+    .tabs{display:flex;overflow-x:auto;flex-shrink:0;border-bottom:1px solid #e6ecf3;padding:0 15px;gap:16px}.tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:#718198;padding:10px 1px;font-size:12px;white-space:nowrap}.tabs button.active{color:#2661cd;border-bottom-color:#346cdf}
+    .view{padding:12px 15px;min-height:0;flex:1;overflow:auto}.hidden{display:none!important}.tools{display:flex;gap:8px;margin-bottom:10px}input,select{min-width:0;border:1px solid #dce3ed;border-radius:8px;background:white;color:#26364c;padding:8px}input[type=search]{flex:1}table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px}th{position:sticky;top:0;background:#f6f8fc;text-align:left;color:#8390a2;font-size:10px;text-transform:uppercase;letter-spacing:.4px;padding:8px 6px}td{padding:9px 6px;border-bottom:1px solid #edf1f6;vertical-align:top}td strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}td small{display:block;font-size:10px;color:#8694a7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}td button{padding:2px 7px}.current-row{background:#edf4ff}
+    .tag{border-radius:6px;background:#edf1f7;color:#5f718a;padding:3px 7px;font-size:10px;display:inline-block;white-space:nowrap}.tag.done{color:#147d50;background:#e3f6ec}.tag.error,.tag.review{color:#ad4b27;background:#fff0e7}.tag.saving,.tag.opening,.tag.filling,.tag.verifying{color:#2861c8;background:#e7efff}
+    .drop{border:2px dashed #c3d2e9;background:#f6faff;border-radius:12px;padding:18px;text-align:center;margin-bottom:12px}.drop label{font-weight:700;color:#2e62d7;cursor:pointer}.drop small{display:block;color:#788aa2;font-size:11px;margin-top:6px}.drop.over{background:#e8f1ff;border-color:#346cdf}.mapping{display:grid;grid-template-columns:150px minmax(0,1fr);gap:8px;align-items:center}.mapping label{color:#63758c}.hint{font-size:12px;color:#6b7b92;line-height:1.5}.notice{padding:10px 12px;margin:10px 0;background:#fff7e8;border:1px solid #e9d4a8;border-radius:9px;color:#80622f;font-size:12px}
+    .setting{display:flex;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid #edf1f6}.setting div{flex:1}.setting small{display:block;color:#78879c}.setting input[type=number]{width:80px}.foot{border-top:1px solid #e6edf5;background:#fafbfd;padding:8px 15px;display:flex;gap:10px;align-items:center;color:#7d8b9d;font-size:11px}.foot span:first-child{flex:1}.foot button{padding:4px 8px}
+    .log{display:grid;grid-template-columns:66px 48px 1fr;gap:8px;font-size:11px;padding:8px 0;border-bottom:1px solid #edf1f6;overflow-wrap:anywhere}.log time{color:#8c98a8}.log.error{color:#a63e30}.log.ok{color:#167b53}.empty{text-align:center;color:#8390a0;padding:32px 16px}.empty b{display:block;color:#263a55;font-size:15px}.help h3{font-size:13px;color:#2c405c}.help p,.help li{font-size:12px;color:#62748c}.help ol{padding-left:22px}
+    button.pill{position:fixed;right:18px;bottom:18px;color:#fff!important;background:#14263e!important;border:1px solid #365875!important;border-radius:13px;padding:12px 18px;box-shadow:0 8px 30px #0b234044;font-weight:700}button.pill:hover,button.pill:focus-visible{color:#fff!important;background:#294e79!important;border-color:#5e88b4!important}
+    .wc-error{position:absolute;bottom:52px;left:15px;right:15px;z-index:9;background:#fff1ef;border:1px solid #f0c1b8;color:#9f3e34;padding:12px;border-radius:10px;box-shadow:0 8px 25px #0002}.wc-error button{float:right;padding:1px 6px}.wc-detail{position:absolute;inset:60px 12px 12px;z-index:6;background:#fff;border:1px solid #d4e0ef;box-shadow:0 10px 35px #0003;border-radius:12px;padding:15px;overflow:auto}.wc-detail header{display:flex;justify-content:space-between}.wc-detail pre{white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.5 monospace;background:#f6f8fc;padding:10px;border-radius:8px}.wc-detail a{color:#2863da}.wc-detail .actions{padding:0}
+    @media(max-width:540px){.panel{right:7px;bottom:7px;width:calc(100vw - 14px);height:min(650px,calc(100vh - 14px))}.stats{gap:4px}.stat{padding:6px}.actions button{font-size:11px;padding:6px}.tabs{gap:11px}}
+  `;
 function initializeDateManager(root, context) {
   'use strict';
   const { SITE, ORIGIN } = context;
@@ -1698,7 +1723,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.6</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.7</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
