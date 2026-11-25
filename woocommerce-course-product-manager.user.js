@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.0.5
+// @version      1.0.6
 // @description  Массовое редактирование WooCommerce-курсов из Excel: название, URL (slug), HTML-описание, обычная цена, количество уроков (ACF lessons), отключение Downloadable, обложка из медиатеки; очередь, проверка сохранения, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -23,8 +23,8 @@
 // @match        https://bestsocials.online/wp-login.php*
 // @match        https://www.bestsocials.online/wp-admin/*
 // @match        https://www.bestsocials.online/wp-login.php*
-// @updateURL   https://raw.githubusercontent.com/blackowl0192/script_folder/main/woocommerce-course-product-manager.user.js
-// @downloadURL https://raw.githubusercontent.com/blackowl0192/script_folder/main/woocommerce-course-product-manager.user.js
+// @updateURL   https://raw.githubusercontent.com/blackowl0192/script_folder/main/smm-courses-editor.user.js
+// @downloadURL https://raw.githubusercontent.com/blackowl0192/script_folder/main/smm-courses-editor.user.js
 // @run-at       document-idle
 // @noframes
 // @require      https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js
@@ -709,7 +709,7 @@
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">Товары · открыть панель</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>Редактор курсов для SMM курсов</b><small>${esc(SITE)} · v1.0.5</small></div><span class="space"></span><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>Редактор курсов для SMM курсов</b><small>${esc(SITE)} · v1.0.6</small></div><span class="space"></span><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <div class="body"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
       <div class="actions"><button class="primary" id="start">▶ Начать</button><button id="one">Один товар</button><button id="pause">Ⅱ Пауза</button><button class="danger" id="stop">■ Стоп</button><button id="retry">Повторить ошибки</button><button id="report">↓ Отчёт</button></div>
