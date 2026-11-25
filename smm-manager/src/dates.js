@@ -176,6 +176,27 @@ function initializeDateManager(root, context) {
   #smm-date-tool hr{border:0;border-top:1px solid #2f425b;margin:13px 0}
   #smm-date-tool details{border:1px solid #2c3f58;border-radius:9px;padding:8px;margin:10px 0}
   #smm-date-tool summary{cursor:pointer;color:#c2d2eb}
+  #smm-date-tool{position:static;inset:auto;width:100%;min-width:0;min-height:0;max-width:none;max-height:none;height:100%;resize:none;border:0;border-radius:0;box-shadow:none;background:#fff;color:#1f314c;font:13px/1.5 system-ui,sans-serif}
+  #smm-date-tool .head{display:none}
+  #smm-date-tool .main{height:100%;min-height:0;max-height:none;padding:0 15px 15px;overflow:auto}
+  #smm-date-tool .date-nav{padding:0;margin:0 0 10px;border-bottom:1px solid #e5eafa}
+  #smm-date-tool .date-nav button{background:none;border:0;border-bottom:2px solid transparent;color:#53687f;padding:10px}
+  #smm-date-tool .date-nav button.active{border-bottom-color:#346cdf;color:#245fc6}
+  #smm-date-tool .stat{background:#f7f9fd;border-color:#dde5f1}
+  #smm-date-tool .stat strong{color:#1e3b66}
+  #smm-date-tool .stat span,#smm-date-tool .pills,#smm-date-tool .sub,#smm-date-tool label.caption{color:#657a93}
+  #smm-date-tool button{background:#fff;color:#304563;border-color:#d3deeb}
+  #smm-date-tool button.primary{background:#346cdf;color:#fff;border-color:#346cdf}
+  #smm-date-tool button.green{background:#16835a;color:#fff}
+  #smm-date-tool button.danger{background:#fff1ef;color:#9a3c33}
+  #smm-date-tool button.warn{background:#fff4e3;color:#7e5321}
+  #smm-date-tool textarea,#smm-date-tool input[type=number],#smm-date-tool input[type=date],#smm-date-tool select{background:#fff;border-color:#d4deec;color:#243951;color-scheme:light}
+  #smm-date-tool .state{color:#344f6e;background:#f5f8fe;border-color:#d5e1f1}
+  #smm-date-tool .log{background:#f5f8fe;border-color:#d5e1f1}
+  #smm-date-tool .log .info{color:#526b88} #smm-date-tool .log .ok{color:#147d50} #smm-date-tool .log .error{color:#a63e30}
+  #smm-date-tool .options{color:#4c6380} #smm-date-tool summary{color:#3b6097}
+  #smm-date-processed{padding:8px 0;overflow-x:auto} #smm-date-processed table{width:100%}
+  #smm-date-help{padding:8px 0;color:#475d76;line-height:1.7} #smm-date-help li{margin:7px 0}
   `;
   root.append(style);
 
@@ -184,10 +205,12 @@ function initializeDateManager(root, context) {
   panel.innerHTML = `
     <div class="head" id="smm-grip">
       <div class="badge">◷</div>
-      <div><strong>SMMmaster · Даты товаров</strong><small>Quick Edit · без удаления · v1.3.1</small></div>
+      <div><strong>Редактор дат товаров</strong><small>${SITE} · Quick Edit · v1.1.0</small></div>
       <div class="spacer"></div><button class="iconbtn" id="smm-collapse" title="Свернуть/развернуть" type="button">−</button>
     </div>
     <div class="main">
+      <nav class="tabs date-nav"><button data-dtab="work" class="active">Редактор дат</button><button data-dtab="processed">Обработанные</button><button data-dtab="help">Как работать</button></nav>
+      <div id="smm-date-work">
       <div class="row"><button id="smm-import" type="button" class="primary">⬆ Загрузить Excel / CSV / TXT</button><input id="smm-file" type="file" accept=".xlsx,.xls,.csv,.tsv,.txt" /></div>
       <div id="smm-file-info" class="sub">Данные сохраняются в этом браузере между перезагрузками.</div>
       <div id="smm-column-wrap" style="display:none"><label class="caption">Столбец с ID</label><select id="smm-column"></select><button id="smm-accept-column" class="mini green" type="button" style="margin-top:7px">Применить этот столбец</button></div>
@@ -202,11 +225,32 @@ function initializeDateManager(root, context) {
       <div class="row" style="margin-top:10px"><button id="smm-test" class="warn" type="button">Тест: 3 ID</button><button id="smm-start" class="primary" type="button">▶ Старт / продолжить</button><button id="smm-pause" type="button">Ⅱ Пауза</button></div>
       <div class="row" style="margin-top:7px"><button id="smm-report" type="button" class="green">↓ Отчет XLSX</button><button id="smm-missing-csv" type="button">↓ Нет ID (CSV)</button><button id="smm-reset" type="button" class="danger">↺ Сброс</button></div>
       <label class="caption">История операций</label><div class="log" id="smm-log" aria-live="polite"></div>
-      <div class="sub">Дата выбирается случайно в указанном диапазоне; время 00:00 исключено. Товары не удаляются. При 5 последовательных отсутствующих ID — автопауза.</div>
+      <div class="options" style="margin-top:9px"><label>Пауза между ID (мс) <input id="smm-delay" type="number" min="200" max="15000" step="50" style="width:100px" /></label></div>
+      <div class="options"><label><input id="smm-fast" type="checkbox" /> Ускоренный поиск без полной загрузки страницы (с автоматическим резервным режимом)</label></div>
+      <div class="sub">Случайная дата внутри диапазона; 00:00 исключено. При 5 последовательных отсутствующих ID — автопауза. Отключите старую отдельную версию редактора дат.</div>
+      </div>
+      <div id="smm-date-processed" class="hidden"><h3>Обработанные товары</h3><div id="smm-result-table"></div></div>
+      <div id="smm-date-help" class="hidden"><h3>Как работать с редактором дат</h3>
+        <ol><li>Выберите «2. Редактор дат» на нужном сайте.</li>
+        <li>Импортируйте Excel, CSV, TXT с ID товаров или вставьте ID вручную. Выберите колонку при импорте.</li>
+        <li>Задайте диапазон дат: обе границы включены, время 00:00 исключено.</li>
+        <li>Начните с «Тест: 3 ID». Режим «Проверка поиска» не меняет товары.</li>
+        <li>Нажмите «Старт». Задания выполняются в отдельной рабочей вкладке, исходная панель остаётся на месте.</li>
+        <li>Пауза запрещает переход к следующему товару, но не отменяет уже отправленный Update.</li>
+        <li>Выгрузите XLSX-отчёт или CSV ненайденных ID.</li></ol>
+        <p>Изменения выполняются через стандартный WordPress Quick Edit. При ускоренном поиске скрипт получает HTML-строку товара без загрузки изображений/скриптов всей страницы. Если этот способ не сработал, используется обычный поиск. При неопределённом ответе Update скрипт останавливается.</p>
+      </div>
     </div>`;
   root.querySelector('#date-content').append(panel);
 
   // Separate module UI uses the shared manager window.
+  const dateTabs = panel.querySelectorAll('[data-dtab]');
+  const switchDateTab = (target) => {
+    for (const t of ['work','processed','help']) $('#smm-date-' + t).classList.toggle('hidden',t !== target);
+    dateTabs.forEach(b => b.classList.toggle('active',b.dataset.dtab === target));
+    if (target === 'processed') draw();
+  };
+  dateTabs.forEach(b => b.addEventListener('click',() => switchDateTab(b.dataset.dtab)));
   GM_addValueChangeListener(STORAGE, (key, previous, value, remote) => {
     if (!remote || !value || typeof value !== 'object') return;
     state = { ...emptyState(), ...value };
@@ -227,6 +271,16 @@ function initializeDateManager(root, context) {
     $('#smm-state').textContent = `${m}${current ? ' · ID ' + current : ''}\n${state.lastMessage}`;
     $('#smm-dry').checked = !!state.dryRun;
     $('#smm-dry').disabled = state.status === 'running';
+    $('#smm-delay').value = String(state.delayMs);
+    $('#smm-delay').disabled = state.status === 'running';
+    $('#smm-fast').checked = !!state.fastMode;
+    $('#smm-fast').disabled = state.status === 'running';
+    const resultTable = $('#smm-result-table');
+    if (resultTable) {
+      const e = val => String(val??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+      resultTable.innerHTML = state.records.length ? '<table><thead><tr><th>ID</th><th>Статус</th><th>Дата</th><th>Информация</th></tr></thead><tbody>' +
+        state.records.slice(-150).reverse().map(r=>'<tr><td>'+e(r.id)+'</td><td>'+e(r.status)+'</td><td>'+e(r.date)+'</td><td>'+e(r.detail)+'</td></tr>').join('')+'</tbody></table>' : '<p>Обработанных записей пока нет.</p>';
+    }
     const rangeLocked = state.status === 'running';
     $('#smm-date-from').disabled = rangeLocked;
     $('#smm-date-to').disabled = rangeLocked;
@@ -568,6 +622,14 @@ function initializeDateManager(root, context) {
     state = { ...emptyState(), dateFrom, dateTo }; save(); draw();
   });
   $('#smm-dry').addEventListener('change', e => { state.dryRun = e.target.checked; save(); });
+  $('#smm-delay').addEventListener('change', e => {
+    if (state.status === 'running') { e.target.value=state.delayMs; return; }
+    state.delayMs=Math.max(200,Math.min(15000,Number(e.target.value)||350)); save(); draw();
+  });
+  $('#smm-fast').addEventListener('change', e => {
+    if (state.status === 'running') { e.target.checked=!!state.fastMode; return; }
+    state.fastMode=e.target.checked; save(); draw();
+  });
   if (state.status === 'running' && state.phase === 'saving' && IS_DATE_WORKER) {
     state.status = 'paused';
     state.lastMessage = 'Страница перезагрузилась во время Update. Проверьте текущий ID вручную до продолжения.';
