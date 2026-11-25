@@ -243,7 +243,7 @@ function initializeDateManager(root, context) {
         <li>Нажмите «Старт». Задания выполняются в отдельной рабочей вкладке, исходная панель остаётся на месте.</li>
         <li>Пауза запрещает переход к следующему товару, но не отменяет уже отправленный Update.</li>
         <li>Выгрузите XLSX-отчёт или CSV ненайденных ID.</li></ol>
-        <p>Изменения выполняются через стандартный WordPress Quick Edit. При ускоренном поиске скрипт получает HTML-строку товара без загрузки изображений/скриптов всей страницы. Если этот способ не сработал, используется обычный поиск. При неопределённом ответе Update скрипт останавливается.</p>
+        <p>Изменения выполняются через стандартный WordPress Quick Edit. Ускоренный поиск поддерживает 1–5 параллельных GET-запросов, но сохраняет даты последовательно через Quick Edit. Если этот способ не сработал, используется обычный поиск. При неопределённом ответе Update скрипт останавливается.</p>
       </div>
     </div>`;
   root.querySelector('#date-content').append(panel);
@@ -308,6 +308,7 @@ function initializeDateManager(root, context) {
   }
 
   function storeImported(ids, source) {
+    searchCache.clear();
     if (state.status === 'running') { log('Сначала поставьте скрипт на паузу, затем заменяйте список ID', 'error'); return; }
     ids = unique(ids);
     if (!ids.length) { log('Не удалось найти числовые ID в выбранном столбце', 'error'); return; }
@@ -481,6 +482,32 @@ function initializeDateManager(root, context) {
       }
     }, 8000);
   }
+
+  // Parallelize read-only searches, never the Quick Edit Update itself.
+  const searchCache = new Map();
+  async function fetchSearchPage(id) {
+    const url = ORIGIN + '/wp-admin/edit.php?post_type=product&s=' + encodeURIComponent(id);
+    const response = await fetch(url,{credentials:'same-origin',cache:'no-store',redirect:'follow',signal:AbortSignal.timeout(18000)});
+    if (!response.ok || response.url.includes('wp-login.php')) throw new Error('Нет доступа к поиску товаров');
+    return (await response.text()).replace(/<img\b[^>]*>/gi,'');
+  }
+  function prefetchPages() {
+    if (!state.fastMode) return;
+    const limit = Math.max(1,Math.min(5,Number(state.prefetch)||2));
+    const upcoming = state.ids.slice(state.index,state.index+limit);
+    for (const key of searchCache.keys()) if (!upcoming.includes(key)) searchCache.delete(key);
+    for (const id of upcoming) {
+      if (!searchCache.has(id)) searchCache.set(id,fetchSearchPage(id).then(html=>({html}),error=>({error})));
+    }
+  }
+  async function getSearchPage(id) {
+    prefetchPages();
+    const task = searchCache.get(id) || fetchSearchPage(id).then(html=>({html}),error=>({error}));
+    const result = await task;
+    searchCache.delete(id);
+    if (result.error) throw result.error;
+    return result.html;
+  }
   // Fast path: fetch just the product-list HTML; never load its images/scripts.
   // Quick Edit / Update is still performed by native WordPress JavaScript.
   async function fastSearchAndEdit(id) {
@@ -489,10 +516,7 @@ function initializeDateManager(root, context) {
     const list = document.querySelector('#the-list');
     if (!list || !unsafeWindow.inlineEditPost || !document.querySelector('#inline-edit')) return false;
     try {
-      const url = ORIGIN + '/wp-admin/edit.php?post_type=product&s=' + encodeURIComponent(id);
-      const response = await fetch(url,{credentials:'same-origin',cache:'no-store',redirect:'follow',signal:AbortSignal.timeout(18000)});
-      if (!response.ok || response.url.includes('wp-login.php')) throw new Error('Нет доступа к поиску товаров');
-      const html = (await response.text()).replace(/<img\b[^>]*>/gi,'');
+      const html = await getSearchPage(id);
       const parsed = new DOMParser().parseFromString(html,'text/html');
       if (!parsed.querySelector('#the-list') || parsed.querySelector('#loginform')) throw new Error('Неполный HTML списка WordPress');
       const row = parsed.getElementById('post-' + id);
