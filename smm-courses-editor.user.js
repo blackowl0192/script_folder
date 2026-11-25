@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.3.3
+// @version      1.3.4
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -27,7 +27,6 @@
 // @downloadURL https://raw.githubusercontent.com/blackowl0192/script_folder/main/smm-courses-editor.user.js
 // @run-at       document-idle
 // @noframes
-// @require      https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
@@ -53,6 +52,36 @@
   const SITE = location.hostname.replace(/^www\./, '');
   if (location.protocol !== 'https:' || !HOSTS.has(SITE)) return;
   const ORIGIN = location.origin;
+  // Excel is optional at startup: an unavailable CDN must never hide the manager UI.
+  const XLSX_URL='https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+  let sheetLib=null, sheetLoading=null;
+  function getXLSX(){
+    return sheetLib || (typeof unsafeWindow!=='undefined' && unsafeWindow.XLSX) || null;
+  }
+  function ensureXLSX(){
+    if(getXLSX())return Promise.resolve(getXLSX());
+    if(sheetLoading)return sheetLoading;
+    sheetLoading=new Promise((resolve,reject)=>{
+      const script=document.createElement('script');
+      let completed=false;
+      const timer=setTimeout(()=>finish(new Error('Не удалось загрузить SheetJS за 25 секунд. Проверьте подключение к cdn.sheetjs.com или используйте CSV.')),25000);
+      function finish(err){
+        if(completed)return;
+        completed=true;clearTimeout(timer);
+        if(err)reject(err);
+        else {
+          const lib=getXLSX();
+          if(lib){sheetLib=lib;resolve(lib);}
+          else reject(new Error('SheetJS загрузился, но XLSX недоступен. Можно импортировать CSV.'));
+        }
+      }
+      script.src=XLSX_URL;script.async=true;script.crossOrigin='anonymous';
+      script.onload=()=>finish(null);
+      script.onerror=()=>finish(new Error('Не удалось загрузить Excel-библиотеку. Можно использовать CSV.'));
+      (document.head||document.documentElement).append(script);
+    }).catch(err=>{sheetLoading=null;throw err;});
+    return sheetLoading;
+  }
   const SMM_PARAMS = new URLSearchParams(location.search);
   const IS_DASHBOARD = SMM_PARAMS.get('smm_manager') === 'dashboard';
   const COURSE_WORKER_SESSION = 'smm.manager.course.worker.' + SITE;
@@ -653,13 +682,13 @@
     return true;
   }
   function shuffle(rows){for(let i=rows.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[rows[i],rows[j]]=[rows[j],rows[i]];}return rows;}
-  function sheetRows(){return XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[Number($('sheet').value)]],{header:1,defval:'',raw:false,blankrows:true});}
+  function sheetRows(){return getXLSX().utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[Number($('sheet').value)]],{header:1,defval:'',raw:false,blankrows:true});}
   async function readFile(file){
     if(!file||!editable())return;
     try{
-      if(typeof XLSX==='undefined')throw error('Не загрузилась библиотека Excel (SheetJS).');
+      const xlsx=await ensureXLSX();
       if(file.size>25*1024*1024)throw error('Файл больше 25 МБ.');
-      workbook=XLSX.read(await file.arrayBuffer(),{type:'array',cellDates:false});importFile=file.name;
+      workbook=xlsx.read(await file.arrayBuffer(),{type:'array',cellDates:false});importFile=file.name;
       $('filename').textContent=file.name;
       $('sheet').innerHTML=workbook.SheetNames.map((name,i)=>`<option value="${i}">${esc(name)}</option>`).join('');
       $('mapping').classList.remove('hidden');setMapping();switchTab('import');
@@ -1241,13 +1270,12 @@ function initializeDateManager(root, context) {
     if (!file) return;
     try {
       let rows, sheetName = 'Текст';
-      if (/\.(xlsx|xls|csv|tsv)$/i.test(file.name) && typeof XLSX !== 'undefined') {
+      if (/\.(xlsx|xls|csv|tsv)$/i.test(file.name)) {
+        const xlsx = await ensureXLSX();
         const bytes = await file.arrayBuffer();
-        const wb = XLSX.read(bytes, {type:'array'});
+        const wb = xlsx.read(bytes, {type:'array'});
         sheetName = wb.SheetNames[0];
-        rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], {header:1, raw:false, defval:''});
-      } else if (/\.(xlsx|xls)$/i.test(file.name)) {
-        throw new Error('Библиотека Excel не загрузилась. Проверьте интернет или сохраните файл как CSV.');
+        rows = xlsx.utils.sheet_to_json(wb.Sheets[sheetName], {header:1, raw:false, defval:''});
       } else {
         const txt = await file.text();
         rows = txt.split(/\r?\n/).map(s => s.split(/[;,\t]/));
@@ -1556,22 +1584,24 @@ function initializeDateManager(root, context) {
     const labels = {updated:'Обновлено',found:'Найдено, без изменений',missing:'Не найдено',error:'Ошибка'};
     return [['ID','Статус','Новая дата (время сайта)','Детали'], ...selected.map(r => [r.id,labels[r.status] || r.status,r.date || '',r.detail || ''])];
   }
-  function reportExcel() {
-    if (typeof XLSX === 'undefined') {
-      log('Не загружена Excel-библиотека. Отчет сохранен в CSV.', 'error');
+  async function reportExcel() {
+    let xlsx;
+    try{xlsx=await ensureXLSX();}
+    catch(e){
+      log('Не загружена Excel-библиотека. Отчет сохранен в CSV: '+e.message, 'error');
       exportCsv(reportRows(), 'smmmaster_report.csv'); return;
     }
-    const wb = XLSX.utils.book_new();
+    const wb = xlsx.utils.book_new();
     for (const [sheet, subset] of [
       ['Все результаты',state.records], ['Обновлены',state.records.filter(r => r.status === 'updated')],
       ['Не найдены',state.records.filter(r => r.status === 'missing')],
       ['Ошибки',state.records.filter(r => r.status === 'error')]
     ]) {
-      const ws = XLSX.utils.aoa_to_sheet(reportRows(subset));
+      const ws = xlsx.utils.aoa_to_sheet(reportRows(subset));
       ws['!cols'] = [{wch:15},{wch:28},{wch:24},{wch:65}];
-      XLSX.utils.book_append_sheet(wb, ws, sheet);
+      xlsx.utils.book_append_sheet(wb, ws, sheet);
     }
-    XLSX.writeFile(wb, 'smmmaster_dates_report.xlsx');
+    xlsx.writeFile(wb, 'smmmaster_dates_report.xlsx');
     log('Excel-отчёт выгружен.');
   }
 
@@ -1650,7 +1680,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.3</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.4</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
