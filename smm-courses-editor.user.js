@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.3.12
+// @version      1.4.0
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -48,7 +48,7 @@
 
 (() => {
   'use strict';
-  const SCRIPT_VERSION='1.3.12';
+  const SCRIPT_VERSION='1.4.0';
   const HOSTS = new Set(['smmmaster.net', 'hottestcourse.com', 'learnmarket.net', 'profcourse.com', 'bestsocials.online']);
   const SITE = location.hostname.replace(/^www\./, '');
   if (location.protocol !== 'https:' || !HOSTS.has(SITE)) return;
@@ -558,6 +558,63 @@
     resolved.host=location.host;
     if(resolved.href===location.href)location.reload();else location.assign(resolved.href);
   }
+
+  // Submit WordPress's existing Classic Editor form without relying on a browser
+  // navigation from button.click(). One POST only, then a fresh GET/DOM verification.
+  // Uncertain responses are NEVER retried automatically.
+  async function submitWooUpdate(form,button,row){
+    if(form.method.toLowerCase()!=='post')throw error('Форма WordPress не использует POST. Сохранение запрещено.');
+    if(button.type!=='submit')throw error('Кнопка #publish не является submit. Сохранение запрещено.');
+    const action=new URL(form.getAttribute('action')||form.action||'post.php',location.href);
+    if(action.origin!==ORIGIN || !/\/wp-admin\/post\.php$/.test(action.pathname))
+      throw error('Форма WordPress отправляется на неожиданный адрес: '+action.href+'. Сохранение запрещено.');
+    const payload=new FormData(form,button);
+    if(button.name && !payload.has(button.name))payload.append(button.name,button.value||'Update');
+    if(String(payload.get('post_ID')||'')!==row.id)
+      throw error('POST form содержит посторонний post_ID. Сохранение запрещено.');
+    if(String(payload.get('action')||'')!=='editpost')
+      throw error('POST form содержит неожиданный action (ожидалось editpost). Сохранение запрещено.');
+    if(!String(payload.get('_wpnonce')||''))
+      throw error('В форме отсутствует nonce WordPress. Сохранение запрещено.');
+    if(payload.get('post_title')!==row.name)
+      throw error('Перед POST форма изменила название. Сохранение запрещено.');
+    const methodName=button.name||'(без имени)';
+    log('info','Подготовлен WordPress POST: action=editpost, post_ID='+row.id+', кнопка '+methodName+'. Отправляю один запрос.',row);
+    const started=Date.now();
+    let response;
+    try{
+      response=await fetch(action.href,{
+        method:'POST',body:payload,credentials:'same-origin',
+        redirect:'follow',cache:'no-store',signal:AbortSignal.timeout(60000)
+      });
+    }catch(ex){
+      throw error('Результат WordPress POST неизвестен: '+(ex.message||String(ex))+
+        '. Автоматическая повторная отправка запрещена.');
+    }
+    const finished=new URL(response.url||action.href,ORIGIN);
+    const inSameSite=finished.protocol==='https:' && finished.hostname.replace(/^www\./,'')===SITE;
+    const elapsed=((Date.now()-started)/1000).toFixed(1);
+    log(response.ok?'info':'error',
+      'WordPress POST: HTTP '+response.status+', '+elapsed+' сек, redirect='+
+      (response.redirected?'да':'нет')+', url='+finished.pathname+finished.search,row);
+    if(!inSameSite || !response.ok)
+      throw error('WordPress POST вернул неподтверждённый ответ (HTTP '+response.status+'). Повторный Update запрещён.');
+    if(/\/wp-login\.php$/.test(finished.pathname))
+      throw error('Сессия WordPress истекла при POST. Повторный Update запрещён.');
+    // A 200 error page can be returned even after a redirect; inspect the response.
+    const html=await response.text();
+    const documentResult=new DOMParser().parseFromString(html,'text/html');
+    if(documentResult.querySelector('#loginform'))
+      throw error('После POST WordPress потребовал повторный вход. Товар направлен на проверку.');
+    const wpError=documentResult.querySelector('body.wp-die-message,#wpbody-content > .error,#wpbody-content > .notice-error');
+    if(wpError?.textContent?.trim()){
+      throw error('WordPress сообщил об ошибке после POST: '+wpError.textContent.trim().slice(0,250));
+    }
+    // Do not infer success from HTTP 200; only the fresh-page field comparison
+    // in run() may mark a course as done.
+    return {status:response.status,redirected:response.redirected,url:finished.href,seconds:elapsed};
+  }
+
   async function between(){
     const limit=Date.now()+state.settings.delay*1000;
     while(Date.now()<limit){guard();await sleep(Math.min(250,limit-Date.now()));}
@@ -655,18 +712,17 @@
           if(!fieldName||String(body.get(fieldName))!==r.lessons)throw error('POST form потеряла lessons. Update не выполнен.');
           if(body.has('_downloadable'))throw error('POST form всё ещё содержит Downloadable. Update не выполнен.');
           if(String(body.get('_regular_price')||'')!==wooPriceForInput(r.price))throw error('POST form содержит неправильную Regular price (ожидалась десятичная запятая). Update не выполнен.');
-          stage(r,'saving','Нажимаем Update; затем проверяем сохранение на новой странице');
+          // Write a pre-POST checkpoint before any network operation. A crash/timeout
+          // leaves the row in saving, where only verification is allowed.
+          stage(r,'saving','Сохраняем через контролируемый POST WordPress, затем проверяем на новой странице');
           r.saveAt=Date.now();r.saveDoc=DOC;state.stopAfterVerify=single;persist();
-          sessionStorage.setItem(TICKET,JSON.stringify({tab:tabId,run:state.run,id:r.id,kind:'verify',at:Date.now()}));
-          guard();button.click();
-          // Classic WordPress normally navigates on submit. If it does not, fetch a fresh
-          // document; a failed save will be marked 'review' without duplicate submissions.
-          await sleep(14000);
+          guard();
+          await submitWooUpdate(form,button,r);
+          // Keeping the manager alive during POST avoids the lost-page event
+          // that blocked processing after a native button.click() navigation.
           if(halted)state.stopAfterVerify=true;
-          if(!leaving){
-            log('warn','WordPress не перешёл автоматически после Update. Открываю свежую страницу товара в той же вкладке для проверки. Повторного Update не будет.',r);
-            leaving=true;persist();location.replace(productURL(r.id));
-          }
+          log('info','Ответ на POST получен. Открываю свежую страницу товара для сверки без повторного Update.',r);
+          nav(productURL(r.id),'verify');
           return;
         }catch(ex){
           if(ex===STOP)throw ex;
@@ -1754,7 +1810,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.12</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.4.0</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
