@@ -474,6 +474,43 @@ function initializeDateManager(root, context) {
       }
     }, 8000);
   }
+  // Fast path: fetch just the product-list HTML; never load its images/scripts.
+  // Quick Edit / Update is still performed by native WordPress JavaScript.
+  async function fastSearchAndEdit(id) {
+    if (location.pathname !== '/wp-admin/edit.php' ||
+        new URLSearchParams(location.search).get('post_type') !== 'product') return false;
+    const list = document.querySelector('#the-list');
+    if (!list || !unsafeWindow.inlineEditPost || !document.querySelector('#inline-edit')) return false;
+    try {
+      const url = ORIGIN + '/wp-admin/edit.php?post_type=product&s=' + encodeURIComponent(id);
+      const response = await fetch(url,{credentials:'same-origin',cache:'no-store',redirect:'follow',signal:AbortSignal.timeout(18000)});
+      if (!response.ok || response.url.includes('wp-login.php')) throw new Error('Нет доступа к поиску товаров');
+      const html = (await response.text()).replace(/<img\\b[^>]*>/gi,'');
+      const parsed = new DOMParser().parseFromString(html,'text/html');
+      if (!parsed.querySelector('#the-list') || parsed.querySelector('#loginform')) throw new Error('Неполный HTML списка WordPress');
+      const row = parsed.getElementById('post-' + id);
+      if (!row) {
+        finish('missing','точный ID не найден (ускоренный поиск)');
+        return true;
+      }
+      if (!row.querySelector('.editinline')) return false;
+      const imported = document.importNode(row,true);
+      list.replaceChildren(imported);
+      const inlineMeta = parsed.getElementById('inline_' + id);
+      if (inlineMeta && !document.getElementById('inline_' + id)) imported.append(document.importNode(inlineMeta,true));
+      log('ID '+id+': строка товара найдена через fetch без полной загрузки страницы');
+      await processFound(id, imported);
+      return true;
+    } catch (e) {
+      if (state.phase === 'saving') {
+        state.status = 'paused'; save();
+        log('Update мог выполниться для ID '+id+'. Повторный запрос заблокирован: '+e.message,'error');
+        return true;
+      }
+      log('Ускоренный поиск недоступен; обычный поиск WordPress: '+e.message);
+      return false;
+    }
+  }
   async function tick() {
     if (busy || state.status !== 'running') return;
     busy = true;
@@ -484,6 +521,11 @@ function initializeDateManager(root, context) {
         if (visibleId !== id) {
           await sleep(Math.min(1000, state.delayMs));
           if (state.status !== 'running') break;
+          if (state.fastMode && await fastSearchAndEdit(id)) {
+            if (state.status !== 'running') break;
+            await sleep(state.delayMs);
+            continue;
+          }
           await searchId(id);
           return; // Browser navigates; the script auto-resumes on the results page.
         }
