@@ -618,9 +618,11 @@
       return;
     }
     try{
-      authCheck();await acquire();halted=false;
+      authCheck();
+      if(currentPool()?.run!==state.run)throw error('Рабочий поток устарел и не может изменять товары.',true);
+      await acquire();halted=false;
       single=automatic?!!state.single:oneOnly;
-      if(!automatic){state.run=state.run||uid();state.paused=false;state.single=oneOnly;}
+      if(!automatic){state.paused=false;state.single=oneOnly;}
       state.owner=tabId;state.running=true;
       const r=state.rows[state.index];
       if(r&&['saving','verifying'].includes(r.status)&&r.expected&&r.saveDoc===DOC){
@@ -1673,22 +1675,29 @@ function initializeDateManager(root, context) {
     let ticket;try{ticket=JSON.parse(sessionStorage.getItem(TICKET)||'null');}catch{ticket=null;}
     sessionStorage.removeItem(TICKET);
     mount();captureErrors();
-    GM_addValueChangeListener(KEY,(name,oldValue,newValue,remote)=>{
-      if(remote&&!working&&newValue&&typeof newValue==='object'){state=newValue;render();}
-    });
-    GM_addValueChangeListener(COMMAND,(name,oldValue,newValue,remote)=>{
-      if(remote&&working&&newValue&&(newValue.kind==='pause'||newValue.kind==='stop'))
-        stop(newValue.kind==='pause');
-    });
+    if(IS_COURSE_WORKER){
+      GM_addValueChangeListener(COMMAND,(name,oldValue,newValue,remote)=>{
+        if(remote&&working&&newValue?.run===state.run&&['pause','stop'].includes(newValue.kind))
+          stop(newValue.kind==='pause');
+      });
+    } else {
+      const refresh=()=>{if(!working){state=mergedCourseState();render();}};
+      GM_addValueChangeListener(MASTER_KEY,(name,oldValue,newValue,remote)=>{if(remote)refresh();});
+      GM_addValueChangeListener(POOL_KEY,(name,oldValue,newValue,remote)=>{if(remote)refresh();});
+      for(let i=1;i<=5;i++)
+        GM_addValueChangeListener(workerKey(i),(name,oldValue,newValue,remote)=>{if(remote)refresh();});
+    }
     const row=state.rows[state.index];
-    if(SMM_PARAMS.get('smm_manager')==='course-worker'&&!ticket){
-      window.name='smm-manager-courses-'+SITE;
-      await start(SMM_PARAMS.get('smm_one')==='1');
-    }else if(ticket&&row&&ticket.tab===tabId&&ticket.run===state.run&&ticket.id===row.id&&Date.now()-ticket.at<180000){
-      log('info','Новая страница загружена: продолжаем очередь.',row);
+    if(IS_COURSE_WORKER&&SMM_PARAMS.get('smm_manager')==='course-worker'&&!ticket){
+      if(SMM_PARAMS.get('smm_run')===state.run){
+        await start(SMM_PARAMS.get('smm_one')==='1');
+      } else notice('Ссылка рабочего процесса устарела — задача не запущена.');
+    }else if(IS_COURSE_WORKER&&ticket&&row&&ticket.tab===tabId&&ticket.run===state.run&&ticket.id===row.id&&Date.now()-ticket.at<180000){
+      log('info','Новая страница в том же рабочем потоке: продолжаем очередь.',row);
       await start(state.single,true);
-    }else if(state.running&&IS_COURSE_WORKER){
-      state.running=false;state.paused=true;persist();log('warn','Автопереход рабочего процесса не подтверждён. Продолжите через панель управления.',row);
+    }else if(IS_COURSE_WORKER&&state.running){
+      state.running=false;state.paused=true;persist();
+      log('warn','Автопереход не подтверждён. Поток приостановлен; дальнейшие Update не выполняются.',row);
     }
   });
 })();
