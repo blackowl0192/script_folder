@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.3.11
+// @version      1.3.12
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -48,7 +48,7 @@
 
 (() => {
   'use strict';
-  const SCRIPT_VERSION='1.3.11';
+  const SCRIPT_VERSION='1.3.12';
   const HOSTS = new Set(['smmmaster.net', 'hottestcourse.com', 'learnmarket.net', 'profcourse.com', 'bestsocials.online']);
   const SITE = location.hostname.replace(/^www\./, '');
   if (location.protocol !== 'https:' || !HOSTS.has(SITE)) return;
@@ -1754,7 +1754,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.11</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.12</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
@@ -1828,12 +1828,15 @@ function initializeDateManager(root, context) {
     bootStarted=true;
     try{
     const tabData=data&&typeof data==='object'?data:{};
+    let ticket;try{ticket=JSON.parse(sessionStorage.getItem(TICKET)||'null');}catch{ticket=null;}
+    // Upgrading from versions before 1.3.9: the navigation ticket contains the
+    // previous tab identity. Reuse it so a live lease continues on the same tab.
     const savedWorkerId=IS_COURSE_WORKER?sessionStorage.getItem(WORKER_TAB_SESSION):null;
-    tabId=savedWorkerId||tabData.wcCourseProductTabId||uid();
+    const ticketTab=IS_COURSE_WORKER && ticket?.run===state.run && ticket?.tab ? ticket.tab : null;
+    tabId=savedWorkerId||ticketTab||tabData.wcCourseProductTabId||uid();
     if(IS_COURSE_WORKER)sessionStorage.setItem(WORKER_TAB_SESSION,tabId);
     tabData.wcCourseProductTabId=tabId;
     try{GM_saveTab(tabData);}catch(err){console.warn('[SMM Course Manager] GM_saveTab:',err);}
-    let ticket;try{ticket=JSON.parse(sessionStorage.getItem(TICKET)||'null');}catch{ticket=null;}
     sessionStorage.removeItem(TICKET);
     mount();captureErrors();
     if(IS_COURSE_WORKER){
