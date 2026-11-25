@@ -587,12 +587,16 @@ function initializeDateManager(root, context) {
     } finally { busy = false; draw(); }
   }
   function start(limit = null) {
-    if (window.__SMM_RANDOM_DATES__) {
+    if (unsafeWindow.__SMM_RANDOM_DATES__ || window.__SMM_RANDOM_DATES__) {
       log('Обнаружен старый отдельный smmmaster_random_dates.user.js. Отключите его в Tampermonkey, чтобы избежать двойной обработки.', 'error');
       return;
     }
-    const courseState = GM_getValue('bwo.wc.course.product.v1.'+SITE, null);
-    if (courseState?.running) { log('Редактор курсов сейчас выполняет обновления на этом сайте. Дождитесь завершения.', 'error'); return; }
+    const courseKey = 'bwo.wc.course.product.v1.' + SITE;
+    const courseState = GM_getValue(courseKey, null);
+    const courseLease = GM_getValue(courseKey + '.lease', null);
+    if (courseState?.running || (courseLease && courseLease.expires > Date.now())) {
+      log('Редактор курсов сейчас выполняет обновления на этом сайте. Дождитесь завершения.', 'error'); return;
+    }
     if (!state.ids.length) { log('Сначала загрузите список ID', 'error'); return; }
     if (state.index >= state.ids.length) { log('Все ID обработаны. Сбросьте или загрузите новый список.'); return; }
     if (!dateRange()) { log('Укажите корректный диапазон дат: дата «От» не позже даты «До».', 'error'); return; }
