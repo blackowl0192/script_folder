@@ -125,6 +125,7 @@
   if(WORKER_ID && !rememberedWorker)sessionStorage.setItem(COURSE_WORKER_SESSION,String(WORKER_ID));
   const IS_COURSE_WORKER = WORKER_ID>0;
   const POOL_KEY = MASTER_KEY + '.pool';
+  const STOP_ALL_KEY = MASTER_KEY + '.emergency-stop';
   const workerKey = id => MASTER_KEY+'.worker.'+id;
   const KEY = IS_COURSE_WORKER ? workerKey(WORKER_ID) : MASTER_KEY;
   const LEASE = `${KEY}.lease`;
@@ -147,6 +148,10 @@
 
   // Every worker has an independent state key; the dashboard only merges read-only snapshots.
   function currentPool(){return GM_getValue(POOL_KEY,null);}
+  function emergencyStopFor(run){
+    const stop=GM_getValue(STOP_ALL_KEY,null);
+    return !!(run && stop && stop.run===run);
+  }
   function activeLease(id){const l=GM_getValue(workerKey(id)+'.lease',null);return !!(l && l.expires>Date.now());}
   function poolBusy(pool=currentPool()){
     return !!(pool?.workers?.length && (pool.workers.some(activeLease) ||
@@ -305,7 +310,11 @@
   function owned(){const lease=GM_getValue(LEASE,null);return !!(lease&&lease.tab===tabId&&lease.expires>Date.now());}
   function guard(allowStopped=false){
     authCheck();
-    if(IS_COURSE_WORKER && currentPool()?.run!==state.run)throw error('Этот рабочий поток принадлежит старой очереди и остановлен.',true);
+    if(IS_COURSE_WORKER && currentPool()?.run!==state.run)
+      throw error('Этот рабочий поток принадлежит старой очереди и остановлен.',true);
+    // Cross-tab emergency barrier. Reads GM storage synchronously before EVERY
+    // destructive action, even if a worker missed a command during navigation.
+    if(IS_COURSE_WORKER && emergencyStopFor(state.run))halted=true;
     if(!owned())throw error('Другая вкладка управляет очередью либо завершилась аренда.',true);
     if(halted&&!allowStopped)throw STOP;
   }
@@ -863,6 +872,11 @@
       notice('Рабочая вкладка не принадлежит активному запуску.');return;
     }
     const pendingCommand=GM_getValue(COMMAND,null);
+    if(emergencyStopFor(state.run)){
+      state.running=false;state.paused=true;persist();
+      log('warn','Аварийный стоп всех потоков активен. Новые действия и Update запрещены.');
+      return;
+    }
     if(pendingCommand?.run===state.run && ['stop','pause'].includes(pendingCommand.kind)){
       state.running=false;state.paused=true;persist();
       log('warn','Рабочий поток остановлен командой из панели до продолжения работы.');
@@ -1123,10 +1137,19 @@
     if(working || IS_COURSE_WORKER){notice('Запустите очередь из основной панели.');return;}
     const dates=GM_getValue('bwo.smm.dates.v2.'+SITE,null);
     if(dates?.status==='running'||dates?.phase==='saving'){notice('Редактор дат работает на этом сайте. Сначала остановите его.');return;}
-    if(poolBusy()){notice('Рабочие вкладки курсов уже активны.');return;}
+    const oldPool=currentPool();
+    const stoppedPool=!!oldPool && emergencyStopFor(oldPool.run);
+    const canRecoverStopped=stoppedPool && !oldPool.workers.some(activeLease) &&
+      Date.now()-oldPool.createdAt>=20000;
+    if(poolBusy() && !canRecoverStopped){
+      notice(stoppedPool?
+        'Аварийный стоп отправлен, но ещё есть активные вкладки или блокировки. Дождитесь их освобождения.' :
+        'Рабочие вкладки курсов уже активны.');
+      return;
+    }
     const legacy=GM_getValue(MASTER_KEY+'.lease',null);
     if(legacy?.expires>Date.now()){notice('Предыдущий обработчик курсов ещё активен.');return;}
-    const base=consolidatePool();
+    const base=consolidatePool(canRecoverStopped);
     if(!base){notice('Рабочие потоки ещё завершают задачи.');return;}
     const uncertain=base.rows.filter(r=>['saving','verifying'].includes(r.status)&&!r.expected);
     if(uncertain.length){
@@ -1153,6 +1176,9 @@
       GM_setValue(workerKey(i+1)+'.lease',null);
       GM_setValue(workerKey(i+1)+'.command',null);
     }
+    // A new run is only possible through this explicit Start action after
+    // all old leases are gone and their queue has been consolidated.
+    GM_setValue(STOP_ALL_KEY,null);
     GM_setValue(POOL_KEY,pool);
     let opened=0;
     // Only N named tabs are opened per launch. All subsequent courses use location.assign in those tabs.
@@ -1176,6 +1202,34 @@
       GM_setValue(workerKey(id)+'.command',{kind:'pause',run:pool.run,at:Date.now(),id:uid()});
     }
   }
+  function emergencyStopAllCourseWorkers(){
+    const pool=currentPool();
+    if(!pool?.workers?.length){
+      notice('Нет активного запуска курсов. Останавливать нечего.');return;
+    }
+    const now=Date.now();
+    const existing=GM_getValue(STOP_ALL_KEY,null);
+    if(existing?.run===pool.run){
+      notice('Аварийная остановка уже запрошена. Новые действия заблокированы.');return;
+    }
+    // Store the durable barrier FIRST. A worker which missed a change event
+    // still sees it in guard() and at every new page startup.
+    GM_setValue(STOP_ALL_KEY,{run:pool.run,at:now,reason:'emergency',site:SITE});
+    GM_setValue(POOL_KEY,{...pool,emergencyStoppedAt:now});
+    for(const id of pool.workers){
+      // Backward compatible "stop" command for workers already running old code.
+      GM_setValue(workerKey(id)+'.command',{
+        kind:'stop',run:pool.run,id:uid(),at:now,emergency:true
+      });
+    }
+    if(IS_COURSE_WORKER && state.run===pool.run)stop(false);
+    if(root)render();
+    notice('АВАРИЙНЫЙ СТОП: запрет новых действий отправлен всем '+pool.workers.length+
+      ' потокам. Уже отправленный Update не отменяется. Результаты очереди сохранены.');
+  }
+  // Always accessible from Tampermonkey, including on a worker page when the panel
+  // is hidden or the page navigation did not finish.
+  GM_registerMenuCommand('АВАРИЙНЫЙ СТОП ВСЕХ ПОТОКОВ · Курсы',emergencyStopAllCourseWorkers);
   function stopCourseFromPanel(pause){
     if(IS_COURSE_WORKER){stop(pause);return;}
     const pool=currentPool();
