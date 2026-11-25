@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.3.7
+// @version      1.3.8
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -48,6 +48,7 @@
 
 (() => {
   'use strict';
+  const SCRIPT_VERSION='1.3.8';
   const HOSTS = new Set(['smmmaster.net', 'hottestcourse.com', 'learnmarket.net', 'profcourse.com', 'bestsocials.online']);
   const SITE = location.hostname.replace(/^www\./, '');
   if (location.protocol !== 'https:' || !HOSTS.has(SITE)) return;
@@ -56,17 +57,17 @@
   // It is removed after the full panel has mounted successfully.
   const bootLauncher=document.createElement('button');
   bootLauncher.id='bwo-smm-manager-boot';
-  bootLauncher.textContent='SMM Manager · Открыть';
+  bootLauncher.textContent='SMM Manager · v'+SCRIPT_VERSION+' · Открыть';
   bootLauncher.style.cssText='all:initial!important;box-sizing:border-box!important;position:fixed!important;right:16px!important;bottom:16px!important;z-index:2147483647!important;padding:12px 16px!important;border-radius:12px!important;background:#153d77!important;color:#fff!important;font:600 13px system-ui,sans-serif!important;cursor:pointer!important;box-shadow:0 5px 20px #001a3f75!important';
   document.documentElement.append(bootLauncher);
   function fatalLauncher(err){
     const message=String(err?.message||err||'Неизвестная ошибка');
     console.error('[SMM Course Manager] Сбой панели:',err);
-    bootLauncher.textContent='SMM Manager · Ошибка запуска';
-    bootLauncher.title=message;
+    bootLauncher.textContent='SMM Manager v'+SCRIPT_VERSION+' · Ошибка запуска';
+    bootLauncher.title='Версия '+SCRIPT_VERSION+' — '+message;
     bootLauncher.onclick=()=>{
       if(panel&&root){panel.classList.remove('hidden');root.getElementById('pill')?.classList.add('hidden');}
-      else alert('Не удалось открыть панель SMM Manager.\n'+message+'\nПроверьте ошибки в консоли браузера (F12).');
+      else alert('Не удалось открыть панель SMM Manager v'+SCRIPT_VERSION+'.\n'+message+'\nПроверьте ошибки в консоли браузера (F12).');
     };
   }
   bootLauncher.onclick=()=>{if(panel&&root){panel.classList.remove('hidden');root.getElementById('pill')?.classList.add('hidden');}};
@@ -1719,11 +1720,14 @@ function initializeDateManager(root, context) {
   }
 }
   function mount(){
+    if(typeof css!=='string'||!css.includes('.panel{')){
+      throw new Error('Не загружены стили панели (css). Версия: '+SCRIPT_VERSION);
+    }
     const host=document.createElement('div');host.id='bwo-woo-course-manager';host.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:2147483646';document.documentElement.append(host);
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.7</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.8</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
