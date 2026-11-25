@@ -1104,13 +1104,28 @@
     $('bar').style.width=(state.rows.length?100*count(['done','skipped'])/state.rows.length:0)+'%';
     const current=state.rows[state.index];
     const ws=state.poolWorkers||[];
-    $('current').textContent=ws.length?('Рабочие вкладки: '+ws.filter(x=>x.live).length+'/'+ws.length+' · '+ws.map(x=>'№'+x.id+': '+x.done+'/'+x.total+(x.live?' работает':'')).join(' · ')):
+    const pool=currentPool();
+    const stoppedPool=!!pool && emergencyStopFor(pool.run);
+    const recentWorkerActivity=pool?.workers?.reduce((m,id)=>{
+      const row=GM_getValue(workerKey(id),null);
+      return Math.max(m,Date.parse(row?.updated||0)||0);
+    },0)||0;
+    // Never restart while an older tab may still have a 60-second POST in flight.
+    const canRestartAfterStop=stoppedPool && !pool.workers.some(activeLease) &&
+      Date.now()-pool.createdAt>=20000 && Date.now()-recentWorkerActivity>=90000;
+    $('current').textContent=stoppedPool?
+      ('АВАРИЙНЫЙ СТОП ВСЕХ ПОТОКОВ · '+ws.filter(x=>x.live).length+
+       ' вкладок с активной блокировкой. Новые Update запрещены.'):
+      ws.length?('Рабочие вкладки: '+ws.filter(x=>x.live).length+'/'+ws.length+' · '+ws.map(x=>'№'+x.id+': '+x.done+'/'+x.total+(x.live?' работает':'')).join(' · ')):
       (working||state.running)?(halted?'Остановка после текущей операции':`${STATUSES[current?.status]||'Работа'} · ${current?.name||current?.id||''}`):
       state.paused?'На паузе — нажмите Продолжить':state.rows.length?`${state.filename} · ${SITE}`:'Загрузите Excel с товарами';
     const hasWork=state.rows.some(x=>x.status==='pending'||ACTIVE.has(x.status));
-    const isActive=working||!!state.running||poolBusy();
-    $('start').disabled=isActive||!hasWork;$('one').disabled=isActive||!hasWork;$('stop').disabled=!isActive;$('pause').disabled=!isActive||halted;
-    const pool=currentPool();
+    const isActive=working||!!state.running||(poolBusy()&&!canRestartAfterStop);
+    $('start').disabled=isActive||!hasWork;$('one').disabled=isActive||!hasWork;
+    $('stop').disabled=!isActive;$('pause').disabled=!isActive||halted;
+    // Important: emergency stop is enabled even when a worker is hung, paused or
+    // cannot report an active lease. It is disabled only after acknowledgement.
+    $('stopAll').disabled=!pool?.workers?.length||stoppedPool;
     const hasUnverified=state.rows.some(r=>r.expected&&r.saveAt&&['saving','verifying','review'].includes(r.status));
     $('verifyStalled').disabled=working||IS_COURSE_WORKER||!hasUnverified||
       !!pool?.workers?.some(activeLease)||!!(pool&&Date.now()-pool.createdAt<20000);
@@ -1153,11 +1168,15 @@
     if(dates?.status==='running'||dates?.phase==='saving'){notice('Редактор дат работает на этом сайте. Сначала остановите его.');return;}
     const oldPool=currentPool();
     const stoppedPool=!!oldPool && emergencyStopFor(oldPool.run);
+    const lastActivity=oldPool?.workers?.reduce((m,id)=>{
+      const row=GM_getValue(workerKey(id),null);
+      return Math.max(m,Date.parse(row?.updated||0)||0);
+    },0)||0;
     const canRecoverStopped=stoppedPool && !oldPool.workers.some(activeLease) &&
-      Date.now()-oldPool.createdAt>=20000;
+      Date.now()-oldPool.createdAt>=20000 && Date.now()-lastActivity>=90000;
     if(poolBusy() && !canRecoverStopped){
       notice(stoppedPool?
-        'Аварийный стоп отправлен, но ещё есть активные вкладки или блокировки. Дождитесь их освобождения.' :
+        'Аварийный стоп включён. Дождитесь завершения всех блокировок и 90 секунд без активности, затем продолжите очередь.' :
         'Рабочие вкладки курсов уже активны.');
       return;
     }
@@ -1276,6 +1295,8 @@
   }
 
   const css=`
+    .kill-all{background:#a8202c!important;border-color:#a8202c!important;color:#fff!important;font-weight:800!important}
+    .kill-all:hover{background:#851823!important;color:#fff!important}
     .module-nav{display:flex;gap:8px;padding:9px 14px;background:#eef3fb;border-bottom:1px solid #d6e1ef;align-items:center}
     .module-actions{display:flex;gap:8px;flex-wrap:wrap}
     .module-nav button{font-size:12px;padding:8px 12px;background:#fff}
@@ -2063,7 +2084,7 @@ function initializeDateManager(root, context) {
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
-      <div class="actions"><button class="primary" id="start">▶ Начать</button><button id="one">Один товар</button><button id="verifyStalled">Проверить зависшие (GET)</button><button id="pause">Ⅱ Пауза</button><button class="danger" id="stop">■ Стоп</button><button id="retry">Повторить ошибки</button><button id="report">↓ Отчёт</button></div>
+      <div class="actions"><button class="primary" id="start">▶ Начать</button><button id="one">Один товар</button><button id="verifyStalled">Проверить зависшие (GET)</button><button id="pause">Ⅱ Пауза</button><button class="danger" id="stop">■ Стоп</button><button class="kill-all" id="stopAll" title="Аварийно запретить новые Update во всех рабочих вкладках этого сайта">■ АВАРИЙНЫЙ СТОП ВСЕХ</button><button id="retry">Повторить ошибки</button><button id="report">↓ Отчёт</button></div>
       <nav class="tabs"><button data-tab="queue">Очередь</button><button data-tab="processed">Обработанные</button><button data-tab="import" class="active">Импорт Excel</button><button data-tab="log">Журнал</button><button data-tab="settings">Настройки</button><button data-tab="help">Как работать</button></nav>
       <div class="view hidden" id="queue"><div class="tools"><input type="search" id="search" placeholder="Название, ID или img…"><select id="filter"><option value="all">Все статусы</option><option value="pending">В очереди</option><option value="error">Ошибка</option><option value="skipped">Пропущено</option></select></div><div id="rows"></div></div>
       <div class="view" id="import"><div class="tools"><button class="danger" id="reset">Очистить очередь и историю</button></div><div class="drop" id="drop"><label for="file">Выбрать Excel-файл</label><input id="file" type="file" accept=".xlsx,.xls,.csv" hidden><small>Или перетащите сюда · .xlsx / .xls / .csv</small><small id="filename">Данные Excel обрабатываются локально</small></div>
@@ -2073,9 +2094,9 @@ function initializeDateManager(root, context) {
       <div class="view hidden" id="settings"><label class="setting"><div>Параллельных потоков<small>От 1 до 5 рабочих вкладок. Каждая вкладка обрабатывает много курсов по очереди — новые вкладки не создаются для каждого товара.</small></div><input id="workers" type="number" min="1" max="5" step="1" value="1"></label><label class="setting"><div>Пауза между товарами<small>В секундах после проверки результата</small></div><input id="delay" type="number" min="1" max="60" value="3"></label><label class="setting"><input id="stopOnError" type="checkbox" checked><div>Останавливаться при ошибке<small>Рекомендуется: ошибка может оставить несохранённые изменения в редакторе</small></div></label><div class="setting"><div>Перемешивание Excel<small>Однократно при каждом импорте; исходные номера строк сохраняются</small></div><span class="tag done">Всегда</span></div><div class="setting"><div>Downloadable<small>Флажок снимается у каждого товара</small></div><span class="tag done">Всегда</span></div><button id="backup">↓ Резервная копия JSON</button></div>
       <div class="view help hidden" id="help"><h3>1. Подготовьте Excel</h3><p>Первая строка: <b>ID, Name, Description, Regular price, lessons, img</b>. ID — существующий post ID товара. Description — HTML, как в редакторе WordPress. Regular price может быть с € или запятой. lessons — целое положительное число. img — 14-значное имя уже загруженной фотографии в Media Library (не внутренний attachment ID).</p>
       <h3>2. Импортируйте товары</h3><ol><li>Войдите в <b>${esc(SITE)}</b> как администратор.</li><li>Откройте «Импорт Excel», выберите файл, лист и шесть колонок.</li><li>Нажмите «Загрузить в очередь». Курсы будут перемешаны; номера исходных строк останутся в отчёте.</li><li>Нажмите «Один товар» и проверьте сохранённые поля на сайте; после этого нажмите «Начать» для остальных.</li></ol>
-      <h3>3. Как работают потоки</h3><p>На вкладке «Настройки» выберите от 1 до 5 потоков. Один поток использует одну рабочую вкладку и последовательно обрабатывает все назначенные курсы. Например, для 400 товаров и 5 потоков создаётся пять вкладок примерно по 80 товаров. Все следующие товары открываются переходом в тех же вкладках. Не закрывайте рабочие вкладки до завершения.</p>
+      <h3>3. Как работают потоки</h3><p>На вкладке «Настройки» выберите 1–5 потоков. Ровно столько же рабочих вкладок открывается при старте. Каждая вкладка получает свою непересекающуюся часть очереди. После сохранения и проверки товара следующий открывается через <code>location.replace()</code> В ТОЙ ЖЕ вкладке; дополнительные вкладки для каждого товара не создаются. Например, 400 товаров в 5 потоков — пять вкладок примерно по 80 товаров. При переходе сохраняются служебные параметры номера потока и запуска. Не закрывайте вкладки до завершения или аварийной остановки.</p>
       <h3>4. Что делает скрипт</h3><p>Открывает <code>/wp-admin/post.php?post=ID&amp;action=edit</code>. Заполняет Name и slug, переключает редактор Description в Text, вставляет HTML и возвращается в Visual. Меняет Regular price и ACF lessons, снимает Downloadable, удаляет старую обложку, ищет точную фотографию по img и нажимает Set product image. После проверки полей нажимает Update и перезагружает товар для сверки.</p>
-      <h3>5. Пауза, ошибки и безопасность</h3><p>Не редактируйте страницу вручную во время работы. Пауза останавливает новые действия, но не отменяет отправленный Update. После сохранения статус «Выполнено» ставится только после сверки на новой странице. Если данные не совпали — «Проверить», повторный Update автоматически не выполняется. Для такого товара доступна проверка без Update через «⋯».</p><p>Если произошла ошибка, исправьте причину, затем «Повторить ошибки». Неверные строки Excel исправляются только повторным импортом. Скачивайте отчёт и журнал. Очереди и настройки независимы для каждого сайта: <b>smmmaster.net, hottestcourse.com, learnmarket.net, profcourse.com, bestsocials.online</b>.</p>
+      <h3>5. Пауза, ошибки и безопасность</h3><p><b>«АВАРИЙНЫЙ СТОП ВСЕХ»</b> доступен даже при зависании потоков. Он записывает общий запрет на новые действия в Tampermonkey, останавливает все рабочие вкладки и сохраняет очередь. Отправленный HTTP POST невозможно отменить — после остановки проверьте такие товары через GET. Кнопка также доступна слева внизу каждой рабочей вкладки и в меню Tampermonkey. Повторный запуск — только вручную, после прекращения активности вкладок.</p><p>Не редактируйте страницу вручную во время работы. Пауза останавливает новые действия, но не отменяет отправленный Update. После сохранения статус «Выполнено» ставится только после сверки на новой странице. Если данные не совпали — «Проверить», повторный Update автоматически не выполняется. Для такого товара доступна проверка без Update через «⋯».</p><p>Если произошла ошибка, исправьте причину, затем «Повторить ошибки». Неверные строки Excel исправляются только повторным импортом. Скачивайте отчёт и журнал. Очереди и настройки независимы для каждого сайта: <b>smmmaster.net, hottestcourse.com, learnmarket.net, profcourse.com, bestsocials.online</b>.</p>
       <h3>Ограничения</h3><p>Скрипт рассчитан на Classic WordPress / WooCommerce и указанные элементы ACF. В отдельных темах или версиях админки разметка может отличаться. При отсутствии нужных полей скрипт останавливается до Update.</p></div>
       <footer class="foot"><span id="updated">Очередь хранится локально</span><button id="prev">←</button><span id="pages" style="flex:none">1 / 1</span><button id="next">→</button></footer></div><div class="body hidden" id="date-content"></div></section>`;
     panel=$('panel');
@@ -2083,6 +2104,7 @@ function initializeDateManager(root, context) {
     on('start','click',()=>launchCourse(false));on('one','click',()=>launchCourse(true));
     on('verifyStalled','click',()=>verifyStalledFromDashboard().catch(ex=>notice(ex.message||String(ex))));
     on('pause','click',()=>stopCourseFromPanel(true));on('stop','click',()=>stopCourseFromPanel(false));
+    on('stopAll','click',()=>emergencyStopAllCourseWorkers());
     on('retry','click',retryErrors);on('report','click',exportReport);on('downloadLog','click',exportLog);on('reset','click',resetAll);
     on('load','click',loadQueue);on('backup','click',()=>download(JSON.stringify(IS_COURSE_WORKER?state:mergedCourseState(),null,2),`${SITE}-woo-products-backup.json`,'application/json'));
     on('file','change',e=>readFile(e.target.files[0]));on('sheet','change',setMapping);
