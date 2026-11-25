@@ -713,11 +713,15 @@
     const started=Date.now();
     let response;
     try{
+      // Final synchronous barrier immediately before opening the POST request.
+      // A stop during field preparation must never start a new Update.
+      guard();
       response=await fetch(action.href,{
         method:'POST',body:payload,credentials:'same-origin',
         redirect:'follow',cache:'no-store',signal:AbortSignal.timeout(60000)
       });
     }catch(ex){
+      if(ex===STOP)throw ex;
       throw error('Результат WordPress POST неизвестен: '+(ex.message||String(ex))+
         '. Автоматическая повторная отправка запрещена.');
     }
@@ -1228,12 +1232,9 @@
   }
   function pauseOtherCourseWorkers(){
     if(!IS_COURSE_WORKER||!state.settings.stopOnError)return;
-    const pool=currentPool();
-    if(!pool||pool.run!==state.run)return;
-    for(const id of pool.workers){
-      if(id===WORKER_ID)continue;
-      GM_setValue(workerKey(id)+'.command',{kind:'pause',run:pool.run,at:Date.now(),id:uid()});
-    }
+    // A pause command can be missed while a tab is navigating. Use the durable
+    // emergency barrier so ALL threads stop on the next safe checkpoint.
+    emergencyStopAllCourseWorkers('worker-error');
   }
   function emergencyStopAllCourseWorkers(reason='manual'){
     if(typeof reason!=='string')reason='manual';
@@ -2171,10 +2172,16 @@ function initializeDateManager(root, context) {
     mount();captureErrors();
     if(IS_COURSE_WORKER){
       GM_addValueChangeListener(COMMAND,(name,oldValue,newValue,remote)=>{
-        if(remote&&working&&newValue?.run===state.run&&['pause','stop'].includes(newValue.kind))
+        if(remote&&working&&!halted&&newValue?.run===state.run&&['pause','stop'].includes(newValue.kind))
           stop(newValue.kind==='pause');
       });
-    } else {
+    }
+    GM_addValueChangeListener(STOP_ALL_KEY,(name,oldValue,newValue,remote)=>{
+      if(!newValue||newValue.run!==state.run)return;
+      if(IS_COURSE_WORKER && !halted)stop(false);
+      if(root)render();
+    });
+    if(!IS_COURSE_WORKER){
       const refresh=()=>{if(!working){state=mergedCourseState();render();}};
       GM_addValueChangeListener(MASTER_KEY,(name,oldValue,newValue,remote)=>{if(remote)refresh();});
       GM_addValueChangeListener(POOL_KEY,(name,oldValue,newValue,remote)=>{if(remote)refresh();});
