@@ -642,16 +642,25 @@
   }
   function release(){clearInterval(leaseTimer);if(owned())GM_setValue(LEASE,null);}
   function nav(url,kind='open'){
-    guard(true);
+    // A queued emergency stop must prevent opening the next item.
+    guard();
     const r=state.rows[state.index];
-    sessionStorage.setItem(TICKET,JSON.stringify({tab:tabId,run:state.run,id:r?.id||'',kind,at:Date.now()}));
-    if(IS_COURSE_WORKER)window.name=WORKER_PREFIX+WORKER_ID;
-    persist();leaving=true;
     const resolved=new URL(url,ORIGIN);
     // A shop can canonically redirect between the www and non-www admin host.
     if(resolved.protocol!==location.protocol || resolved.hostname.replace(/^www\./,'')!==SITE)
       throw error('Запрещён переход на другой сайт.',true);
     resolved.host=location.host;
+    if(IS_COURSE_WORKER){
+      // Keep the worker identity in EVERY product URL, not only the first URL.
+      // This survives missing window.name, lost sessionStorage or a WP redirect.
+      resolved.searchParams.set('smm_manager','course-worker');
+      resolved.searchParams.set('smm_worker',String(WORKER_ID));
+      resolved.searchParams.set('smm_run',state.run);
+    }
+    guard();
+    sessionStorage.setItem(TICKET,JSON.stringify({tab:tabId,run:state.run,id:r?.id||'',kind,at:Date.now()}));
+    if(IS_COURSE_WORKER)window.name=WORKER_PREFIX+WORKER_ID;
+    persist();leaving=true;
     if(kind==='verify'||postedFromThisDocument){
       // We have already sent this page's WordPress form via fetch.
       // Classic Editor's pending-changes guard would otherwise block
@@ -668,11 +677,16 @@
       const current=state.rows[state.index];
       state.running=false;state.paused=true;state.stopAfterVerify=true;
       leaving=false;persist();release();working=false;
-      log('error','Переход '+kind+' не завершён за 18 секунд. Возможен диалог «Покинуть страницу» или блокировка браузера. '+ 
-        'Товар '+(current?.id||'')+' оставлен на проверку; автоматический Update повторно не отправляется.',current);
+      log('error','Переход '+kind+' не завершён за 18 секунд. Возможен диалог «Покинуть страницу» или блокировка браузера. '+
+        'Товар '+(current?.id||'')+' оставлен без повторного Update. Останавливаем ВСЕ потоки.',current);
+      // A worker that cannot navigate must not leave other tabs posting new items.
+      if(IS_COURSE_WORKER)emergencyStopAllCourseWorkers('navigation-timeout');
     },18000);
-    log('info','Переход '+kind+' в той же рабочей вкладке: '+resolved.pathname+resolved.search,r);
-    if(resolved.href===location.href)location.reload();else location.assign(resolved.href);
+    log('info','Переход '+kind+' в ТОЙ ЖЕ рабочей вкладке №'+WORKER_ID+': '+resolved.pathname+resolved.search,r);
+    // location.replace reuses this exact browser tab and does not build a
+    // 400-page history. Only launchCourse() creates the initial N tabs.
+    if(emergencyStopFor(state.run)){leaving=false;throw STOP;}
+    if(resolved.href===location.href)location.reload();else location.replace(resolved.href);
   }
 
   // Submit WordPress's existing Classic Editor form without relying on a browser
@@ -1202,7 +1216,8 @@
       GM_setValue(workerKey(id)+'.command',{kind:'pause',run:pool.run,at:Date.now(),id:uid()});
     }
   }
-  function emergencyStopAllCourseWorkers(){
+  function emergencyStopAllCourseWorkers(reason='manual'){
+    if(typeof reason!=='string')reason='manual';
     const pool=currentPool();
     if(!pool?.workers?.length){
       notice('Нет активного запуска курсов. Останавливать нечего.');return;
@@ -1214,7 +1229,7 @@
     }
     // Store the durable barrier FIRST. A worker which missed a change event
     // still sees it in guard() and at every new page startup.
-    GM_setValue(STOP_ALL_KEY,{run:pool.run,at:now,reason:'emergency',site:SITE});
+    GM_setValue(STOP_ALL_KEY,{run:pool.run,at:now,reason,site:SITE});
     GM_setValue(POOL_KEY,{...pool,emergencyStoppedAt:now});
     for(const id of pool.workers){
       // Backward compatible "stop" command for workers already running old code.
@@ -1229,7 +1244,24 @@
   }
   // Always accessible from Tampermonkey, including on a worker page when the panel
   // is hidden or the page navigation did not finish.
-  GM_registerMenuCommand('АВАРИЙНЫЙ СТОП ВСЕХ ПОТОКОВ · Курсы',emergencyStopAllCourseWorkers);
+  GM_registerMenuCommand('АВАРИЙНЫЙ СТОП ВСЕХ ПОТОКОВ · Курсы',()=>emergencyStopAllCourseWorkers());
+  // The worker page also has an independent, always-visible kill switch.
+  if(IS_COURSE_WORKER){
+    const quickStop=document.createElement('button');
+    quickStop.id='bwo-smm-kill-all';
+    quickStop.textContent='■ СТОП ВСЕХ ПОТОКОВ';
+    quickStop.title='Остановить очередь курсов во всех рабочих вкладках этого сайта';
+    quickStop.style.cssText='all:initial!important;position:fixed!important;left:14px!important;bottom:14px!important;'+
+      'z-index:2147483647!important;padding:10px 13px!important;border-radius:10px!important;'+
+      'background:#a8202c!important;color:white!important;cursor:pointer!important;'+
+      'font:700 12px system-ui,sans-serif!important;box-shadow:0 4px 16px #39000a66!important';
+    quickStop.onclick=()=>{
+      emergencyStopAllCourseWorkers();
+      quickStop.textContent='■ СТОП ОТПРАВЛЕН';
+      quickStop.disabled=true;
+    };
+    document.documentElement.append(quickStop);
+  }
   function stopCourseFromPanel(pause){
     if(IS_COURSE_WORKER){stop(pause);return;}
     const pool=currentPool();
