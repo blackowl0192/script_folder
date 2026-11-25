@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.2.1
+// @version      1.3.11
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -27,7 +27,6 @@
 // @downloadURL https://raw.githubusercontent.com/blackowl0192/script_folder/main/smm-courses-editor.user.js
 // @run-at       document-idle
 // @noframes
-// @require      https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
@@ -49,22 +48,91 @@
 
 (() => {
   'use strict';
+  const SCRIPT_VERSION='1.3.11';
   const HOSTS = new Set(['smmmaster.net', 'hottestcourse.com', 'learnmarket.net', 'profcourse.com', 'bestsocials.online']);
   const SITE = location.hostname.replace(/^www\./, '');
   if (location.protocol !== 'https:' || !HOSTS.has(SITE)) return;
   const ORIGIN = location.origin;
+  // A small emergency launcher remains visible if the main UI fails to initialize.
+  // It is removed after the full panel has mounted successfully.
+  const bootLauncher=document.createElement('button');
+  bootLauncher.id='bwo-smm-manager-boot';
+  bootLauncher.textContent='SMM Manager · v'+SCRIPT_VERSION+' · Открыть';
+  bootLauncher.style.cssText='all:initial!important;box-sizing:border-box!important;position:fixed!important;right:16px!important;bottom:16px!important;z-index:2147483647!important;padding:12px 16px!important;border-radius:12px!important;background:#153d77!important;color:#fff!important;font:600 13px system-ui,sans-serif!important;cursor:pointer!important;box-shadow:0 5px 20px #001a3f75!important';
+  document.documentElement.append(bootLauncher);
+  function fatalLauncher(err){
+    const message=String(err?.message||err||'Неизвестная ошибка');
+    console.error('[SMM Course Manager] Сбой панели:',err);
+    bootLauncher.textContent='SMM Manager v'+SCRIPT_VERSION+' · Ошибка запуска';
+    bootLauncher.title='Версия '+SCRIPT_VERSION+' — '+message;
+    bootLauncher.onclick=()=>{
+      if(panel&&root){panel.classList.remove('hidden');root.getElementById('pill')?.classList.add('hidden');}
+      else alert('Не удалось открыть панель SMM Manager v'+SCRIPT_VERSION+'.\n'+message+'\nПроверьте ошибки в консоли браузера (F12).');
+    };
+  }
+  bootLauncher.onclick=()=>{if(panel&&root){panel.classList.remove('hidden');root.getElementById('pill')?.classList.add('hidden');}};
+  // Excel is optional at startup: an unavailable CDN must never hide the manager UI.
+  const XLSX_URL='https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+  let sheetLib=null, sheetLoading=null;
+  function getXLSX(){
+    return sheetLib || (typeof unsafeWindow!=='undefined' && unsafeWindow.XLSX) || null;
+  }
+  function ensureXLSX(){
+    if(getXLSX())return Promise.resolve(getXLSX());
+    if(sheetLoading)return sheetLoading;
+    sheetLoading=new Promise((resolve,reject)=>{
+      const script=document.createElement('script');
+      let completed=false;
+      const timer=setTimeout(()=>finish(new Error('Не удалось загрузить SheetJS за 25 секунд. Проверьте подключение к cdn.sheetjs.com или используйте CSV.')),25000);
+      function finish(err){
+        if(completed)return;
+        completed=true;clearTimeout(timer);
+        if(err)reject(err);
+        else {
+          const lib=getXLSX();
+          if(lib){sheetLib=lib;resolve(lib);}
+          else reject(new Error('SheetJS загрузился, но XLSX недоступен. Можно импортировать CSV.'));
+        }
+      }
+      script.src=XLSX_URL;script.async=true;script.crossOrigin='anonymous';
+      script.onload=()=>finish(null);
+      script.onerror=()=>finish(new Error('Не удалось загрузить Excel-библиотеку. Можно использовать CSV.'));
+      (document.head||document.documentElement).append(script);
+    }).catch(err=>{sheetLoading=null;throw err;});
+    return sheetLoading;
+  }
   const SMM_PARAMS = new URLSearchParams(location.search);
   const IS_DASHBOARD = SMM_PARAMS.get('smm_manager') === 'dashboard';
   const COURSE_WORKER_SESSION = 'smm.manager.course.worker.' + SITE;
-  if (SMM_PARAMS.get('smm_manager') === 'course-worker') sessionStorage.setItem(COURSE_WORKER_SESSION, '1');
-  const IS_COURSE_WORKER = SMM_PARAMS.get('smm_manager') !== 'dashboard' &&
-    (SMM_PARAMS.get('smm_manager') === 'course-worker' ||
-      (window.name === 'smm-manager-courses-' + SITE && sessionStorage.getItem(COURSE_WORKER_SESSION) === '1'));
-  const KEY = `bwo.wc.course.product.v1.${SITE}`;
+  const WORKER_PREFIX = 'smm-manager-courses-' + SITE + '-w';
+  const workerRequested = Number(SMM_PARAMS.get('smm_worker') || 0);
+  const validWorker = n => Number.isInteger(n) && n >= 1 && n <= 5;
+  if(SMM_PARAMS.get('smm_manager')==='course-worker' && validWorker(workerRequested)){
+    window.name=WORKER_PREFIX+workerRequested;
+    sessionStorage.setItem(COURSE_WORKER_SESSION,String(workerRequested));
+  }
+  const namedWorker = window.name.startsWith(WORKER_PREFIX) ? Number(window.name.slice(WORKER_PREFIX.length)) : 0;
+  const MASTER_KEY = `bwo.wc.course.product.v1.${SITE}`;
+  const rememberedWorker = sessionStorage.getItem(COURSE_WORKER_SESSION)===String(namedWorker);
+  // WordPress may redirect admin from example.com to www.example.com, where sessionStorage
+  // is a separate origin. Re-identify the named tab only if this exact worker is active.
+  const candidatePool = validWorker(namedWorker) ? GM_getValue(MASTER_KEY+'.pool',null) : null;
+  const candidateShard = validWorker(namedWorker) ? GM_getValue(MASTER_KEY+'.worker.'+namedWorker,null) : null;
+  const matchingActiveWorker = candidatePool?.workers?.includes(namedWorker) &&
+    candidateShard?.run===candidatePool.run && candidateShard.running===true;
+  const WORKER_ID = !IS_DASHBOARD && validWorker(namedWorker) &&
+    (rememberedWorker||matchingActiveWorker) ? namedWorker : 0;
+  if(WORKER_ID && !rememberedWorker)sessionStorage.setItem(COURSE_WORKER_SESSION,String(WORKER_ID));
+  const IS_COURSE_WORKER = WORKER_ID>0;
+  const POOL_KEY = MASTER_KEY + '.pool';
+  const workerKey = id => MASTER_KEY+'.worker.'+id;
+  const KEY = IS_COURSE_WORKER ? workerKey(WORKER_ID) : MASTER_KEY;
   const LEASE = `${KEY}.lease`;
   const TICKET = `${KEY}.nav`;
+  // A stable identity that survives WordPress POST/redirect for each named worker tab.
+  const WORKER_TAB_SESSION = `${KEY}.tab-identity`;
   const COMMAND = `${KEY}.command`;
-  const MODE_KEY = `${KEY}.ui.mode`;
+  const MODE_KEY = `${MASTER_KEY}.ui.mode`;
   const ALIAS = {id:['id','postid','productid'],name:['name','title','productname'],description:['description','content','info'],price:['regularprice','price'],lessons:['lessons','lesson'],img:['img','image','photo']};
   const STATUSES = {pending:'В очереди',opening:'Открывается',filling:'Заполняется',saving:'Сохраняется',verifying:'Проверяется',done:'Выполнено',review:'Проверить',error:'Ошибка',skipped:'Пропущено'};
   const ACTIVE = new Set(['opening','filling','saving','verifying']);
@@ -74,8 +142,74 @@
   const error = (message,fatal=false) => Object.assign(new Error(message),{fatal});
   const STOP = Symbol('stopped');
   const esc = value => String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const empty = () => ({version:1,rows:[],logs:[],filename:'',run:'',index:-1,phase:'idle',running:false,paused:false,owner:'',single:false,stopAfterVerify:false,settings:{delay:3,stopOnError:true},updated:''});
+  const empty = () => ({version:1,rows:[],logs:[],filename:'',run:'',index:-1,phase:'idle',running:false,paused:false,owner:'',single:false,stopAfterVerify:false,settings:{delay:3,stopOnError:true,workers:1},updated:''});
   let state = GM_getValue(KEY,null)||empty();
+
+  // Every worker has an independent state key; the dashboard only merges read-only snapshots.
+  function currentPool(){return GM_getValue(POOL_KEY,null);}
+  function activeLease(id){const l=GM_getValue(workerKey(id)+'.lease',null);return !!(l && l.expires>Date.now());}
+  function poolBusy(pool=currentPool()){
+    return !!(pool?.workers?.length && (pool.workers.some(activeLease) ||
+      pool.workers.some(id=>{
+        const x=GM_getValue(workerKey(id),null);
+        if(x?.run!==pool.run)return false;
+        const recentlyActive=Date.now()-Date.parse(x.updated||0)<120000;
+        return (Date.now()-pool.createdAt<20000 || recentlyActive && x.running) &&
+          x.rows?.some(r=>r.status==='pending'||ACTIVE.has(r.status));
+      })));
+  }
+  function mergedCourseState(){
+    if(IS_COURSE_WORKER)return GM_getValue(KEY,empty());
+    const base=GM_getValue(MASTER_KEY,empty());
+    const pool=currentPool();
+    if(!pool?.workers?.length)return base;
+    const rows=base.rows.map(r=>({...r}));
+    const positions=new Map(rows.map((r,i)=>[r.key,i]));
+    const logs=[...(base.logs||[])],workers=[];
+    for(const id of pool.workers){
+      const sub=GM_getValue(workerKey(id),null);
+      if(!sub||sub.run!==pool.run)continue;
+      for(const r of sub.rows||[]){
+        const ix=positions.get(r.key);
+        if(ix!==undefined)rows[ix]={...r,worker:id};
+      }
+      logs.push(...(sub.logs||[]).map(x=>({...x,worker:id})));
+      workers.push({id,live:activeLease(id),running:!!sub.running,
+        done:sub.rows.filter(r=>r.status==='done').length,
+        total:sub.rows.length,paused:!!sub.paused});
+    }
+    logs.sort((a,b)=>String(a.time||'').localeCompare(String(b.time||'')));
+    return {...base,rows,logs:logs.slice(-2000),running:workers.some(w=>w.live),
+      paused:workers.some(w=>w.paused),poolWorkers:workers,
+      poolStarting:Date.now()-pool.createdAt<20000 && workers.some(w=>!w.live&&w.total&&!w.done)};
+  }
+  function consolidatePool(){
+    const pool=currentPool();
+    if(!pool)return GM_getValue(MASTER_KEY,empty());
+    if(poolBusy(pool))return null;
+    const result=mergedCourseState();
+    for(const row of result.rows){
+      if(['saving','verifying'].includes(row.status)){
+        if(row.expected && row.saveAt){
+          row.status='verifying';
+          row.message='Предыдущий Update мог сохраниться. При продолжении проверим результат с новой страницы без повторной отправки.';
+        }else{
+          row.status='review';
+          row.message='Сохранение не подтверждено и нет достаточных данных для сверки. Проверьте вручную; повторный Update запрещён.';
+        }
+      }else if(['opening','filling'].includes(row.status)){
+        row.status='pending';
+        row.message='Прервано до отправки Update, возвращено в очередь.';
+      }
+      delete row.worker;
+    }
+    delete result.poolWorkers;delete result.poolStarting;
+    result.running=false;result.paused=true;result.index=-1;result.phase='idle';result.owner='';
+    result.stopAfterVerify=false;result.updated=new Date().toISOString();
+    GM_setValue(MASTER_KEY,result);
+    GM_setValue(POOL_KEY,null);
+    return result;
+  }
   let tabId,root,panel,workbook=null,importFile='',working=false,leaving=false,halted=false,single=false,leaseTimer;
   let tab='import',page=0,filter='all',search='',maximized=false;
   const $ = id=>root.getElementById(id);
@@ -165,7 +299,12 @@
   }
   function stage(r,status,message){guard(status==='saving'||status==='verifying');r.status=status;state.phase=status;r.message=message;log('info',message,r);}
   function owned(){const lease=GM_getValue(LEASE,null);return !!(lease&&lease.tab===tabId&&lease.expires>Date.now());}
-  function guard(allowStopped=false){authCheck();if(!owned())throw error('Другая вкладка управляет очередью либо завершилась аренда.',true);if(halted&&!allowStopped)throw STOP;}
+  function guard(allowStopped=false){
+    authCheck();
+    if(IS_COURSE_WORKER && currentPool()?.run!==state.run)throw error('Этот рабочий поток принадлежит старой очереди и остановлен.',true);
+    if(!owned())throw error('Другая вкладка управляет очередью либо завершилась аренда.',true);
+    if(halted&&!allowStopped)throw STOP;
+  }
   async function waitFor(fn,label,timeout=25000,allowStopped=false){
     const started=Date.now();
     while(Date.now()-started<timeout){guard(allowStopped);const result=fn();if(result)return result;await sleep(200);}
@@ -410,9 +549,13 @@
     guard(true);
     const r=state.rows[state.index];
     sessionStorage.setItem(TICKET,JSON.stringify({tab:tabId,run:state.run,id:r?.id||'',kind,at:Date.now()}));
+    if(IS_COURSE_WORKER)window.name=WORKER_PREFIX+WORKER_ID;
     persist();leaving=true;
     const resolved=new URL(url,ORIGIN);
-    if(resolved.origin!==ORIGIN)throw error('Запрещён переход на другой сайт.',true);
+    // A shop can canonically redirect between the www and non-www admin host.
+    if(resolved.protocol!==location.protocol || resolved.hostname.replace(/^www\./,'')!==SITE)
+      throw error('Запрещён переход на другой сайт.',true);
+    resolved.host=location.host;
     if(resolved.href===location.href)location.reload();else location.assign(resolved.href);
   }
   async function between(){
@@ -433,10 +576,19 @@
       while(true){
         guard();
         let i=state.index;
-        if(i<0||!state.rows[i]||!ACTIVE.has(state.rows[i].status))i=state.rows.findIndex(x=>x.status==='pending');
+        if(i<0||!state.rows[i]||!ACTIVE.has(state.rows[i].status)){
+          i=state.rows.findIndex(x=>['saving','verifying'].includes(x.status)&&x.expected);
+          if(i<0)i=state.rows.findIndex(x=>x.status==='pending');
+        }
         if(i<0){state.running=false;state.index=-1;state.phase='idle';persist();log('ok','Очередь завершена. Скачайте отчёт.');break;}
         state.index=i;const r=state.rows[i];
         try{
+          if(['saving','verifying'].includes(r.status)&&!r.expected){
+            r.status='review';
+            r.message='Нет данных для проверки прежнего Update. Повторная отправка заблокирована.';
+            state.running=false;state.paused=true;state.phase='idle';persist();
+            log('error',r.message,r);pauseOtherCourseWorkers();break;
+          }
           if(productIDFromURL(location.href)!==r.id){stage(r,'opening','Открываем товар WooCommerce');nav(r.url,'open');return;}
           await editorReady(['saving','verifying'].includes(r.status));
           if(r.expected&&['saving','verifying'].includes(r.status)){
@@ -446,7 +598,7 @@
             const actual=await snapshot(true);
             r.actual=actual;r.checked=new Date().toISOString();
             const diff=differences(actual,r.expected);
-            if(diff.length){r.status='review';r.message=`После сохранения не совпали: ${diff.join(', ')}. Повторный Update не отправлен.`;log('error',r.message,r);}
+            if(diff.length){r.status='review';r.message=`После сохранения не совпали: ${diff.join(', ')}. Повторный Update не отправлен.`;log('error',r.message,r);pauseOtherCourseWorkers();}
             else{r.status='done';r.message='Все значения подтверждены после перезагрузки';log('ok',r.message,r);}
             const stopNow=state.stopAfterVerify||single||halted||(r.status==='review'&&state.settings.stopOnError);
             state.stopAfterVerify=false;state.phase='idle';state.index=-1;persist();
@@ -511,12 +663,16 @@
           // document; a failed save will be marked 'review' without duplicate submissions.
           await sleep(14000);
           if(halted)state.stopAfterVerify=true;
-          if(!leaving){leaving=true;persist();location.assign(r.url);}
+          if(!leaving){
+            log('warn','WordPress не перешёл автоматически после Update. Открываю свежую страницу товара в той же вкладке для проверки. Повторного Update не будет.',r);
+            leaving=true;persist();location.replace(productURL(r.id));
+          }
           return;
         }catch(ex){
           if(ex===STOP)throw ex;
           r.status=r.saveAt&&r.expected?'review':'error';r.message=ex.message||String(ex);
           state.phase='idle';state.index=-1;persist();log('error',r.message,r);
+          pauseOtherCourseWorkers();
           // A failed row may leave unsaved edits: stop instead of triggering a risky navigation.
           if(ex.fatal||halted||single||state.settings.stopOnError){state.running=false;persist();break;}
           // For non-stopping mode, navigate to the NEXT pending item from a clean page.
@@ -533,15 +689,28 @@
   }
   async function start(oneOnly=false,automatic=false){
     if(working){notice('Очередь уже выполняется.');return;}
+    if(!IS_COURSE_WORKER){notice('Запускайте очередь из кнопки «Начать» в панели управления.');return;}
     state=GM_getValue(KEY,empty());
-    if(GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.status==='running'){
+    const activePool=currentPool();
+    if(!activePool || activePool.run!==state.run || !activePool.workers.includes(WORKER_ID)){
+      notice('Рабочая вкладка не принадлежит активному запуску.');return;
+    }
+    const pendingCommand=GM_getValue(COMMAND,null);
+    if(pendingCommand?.run===state.run && ['stop','pause'].includes(pendingCommand.kind)){
+      state.running=false;state.paused=true;persist();
+      log('warn','Рабочий поток остановлен командой из панели до продолжения работы.');
+      return;
+    }
+    if(['running'].includes(GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.status) || GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.phase==='saving'){
       log('error','Редактор дат выполняет задачи на этом сайте. Одновременные изменения заблокированы.');
       return;
     }
     try{
-      authCheck();await acquire();halted=false;
+      authCheck();
+      if(currentPool()?.run!==state.run)throw error('Рабочий поток устарел и не может изменять товары.',true);
+      await acquire();halted=false;
       single=automatic?!!state.single:oneOnly;
-      if(!automatic){state.run=uid();state.paused=false;state.single=oneOnly;}
+      if(!automatic){state.paused=false;state.single=oneOnly;}
       state.owner=tabId;state.running=true;
       const r=state.rows[state.index];
       if(r&&['saving','verifying'].includes(r.status)&&r.expected&&r.saveDoc===DOC){
@@ -551,19 +720,21 @@
     }catch(ex){state.running=false;persist();release();log('error',ex.message||String(ex));}
   }
   function editable(){
-    if(working){notice('Сначала остановите обработку.');return false;}
-    const lease=GM_getValue(LEASE,null);
-    if(lease&&lease.expires>Date.now()&&lease.tab!==tabId){notice('Другая вкладка выполняет очередь.');return false;}
-    state=GM_getValue(KEY,empty());return true;
+    if(working || IS_COURSE_WORKER){notice('Остановите обработку и используйте основную панель управления.');return false;}
+    if(poolBusy()){notice('Есть активные рабочие вкладки курсов. Сначала дождитесь их завершения.');return false;}
+    const legacy=GM_getValue(MASTER_KEY+'.lease',null);
+    if(legacy && legacy.expires>Date.now()){notice('Старая очередь ещё выполняется.');return false;}
+    state=consolidatePool()||GM_getValue(MASTER_KEY,empty());
+    return true;
   }
   function shuffle(rows){for(let i=rows.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[rows[i],rows[j]]=[rows[j],rows[i]];}return rows;}
-  function sheetRows(){return XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[Number($('sheet').value)]],{header:1,defval:'',raw:false,blankrows:true});}
+  function sheetRows(){return getXLSX().utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[Number($('sheet').value)]],{header:1,defval:'',raw:false,blankrows:true});}
   async function readFile(file){
     if(!file||!editable())return;
     try{
-      if(typeof XLSX==='undefined')throw error('Не загрузилась библиотека Excel (SheetJS).');
+      const xlsx=await ensureXLSX();
       if(file.size>25*1024*1024)throw error('Файл больше 25 МБ.');
-      workbook=XLSX.read(await file.arrayBuffer(),{type:'array',cellDates:false});importFile=file.name;
+      workbook=xlsx.read(await file.arrayBuffer(),{type:'array',cellDates:false});importFile=file.name;
       $('filename').textContent=file.name;
       $('sheet').innerHTML=workbook.SheetNames.map((name,i)=>`<option value="${i}">${esc(name)}</option>`).join('');
       $('mapping').classList.remove('hidden');setMapping();switchTab('import');
@@ -613,11 +784,12 @@
   }
   function csv(rows){return '\uFEFF'+rows.map(row=>row.map(cell=>{let s=String(cell??'');if(/^\s*[=+@-]/.test(s))s="'"+s;return '"'+s.replace(/"/g,'""')+'"';}).join(';')).join('\r\n');}
   function exportReport(){
+    if(!IS_COURSE_WORKER)state=mergedCourseState();
     const header=['Excel Row','Product ID','Name','Edit URL','Description','Regular price','lessons','img','Status','Message','Checked At','Original name','Original slug','Original price','Original lessons','Original image','Saved image','Saved WordPress attachment ID','Excel price (source)'];
     const rows=state.rows.map(r=>[r.excelRow,r.id,r.name,r.url,r.description,r.price,r.lessons,r.img,STATUSES[r.status],r.message,r.checked,r.before?.name,r.before?.slug,r.before?.price,r.before?.lessons,r.before?.image,r.actual?.image,r.actual?.attachmentId,r.rawPrice]);
     download(csv([header,...rows]),`${SITE}-woo-products-report.csv`,'text/csv;charset=utf-8');
   }
-  function exportLog(){download(csv([['Time','Level','Excel Row','Product ID','Stage','Message'],...state.logs.map(x=>[x.time,x.level,x.row,x.id,x.stage,x.message])]),`${SITE}-woo-products-log.csv`,'text/csv;charset=utf-8');}
+  function exportLog(){if(!IS_COURSE_WORKER)state=mergedCourseState();download(csv([['Time','Level','Excel Row','Product ID','Stage','Message'],...state.logs.map(x=>[x.time,x.level,x.row,x.id,x.stage,x.message])]),`${SITE}-woo-products-log.csv`,'text/csv;charset=utf-8');}
   function notice(message){
     if(!panel)return;panel.querySelector('.wc-error')?.remove();const el=document.createElement('div');el.className='wc-error';const close=document.createElement('button');close.textContent='×';close.onclick=()=>el.remove();el.append(close,document.createTextNode(String(message)));panel.append(el);
   }
@@ -646,7 +818,7 @@
     d.querySelector('[data-recheck]').disabled=!r.expected||!r.saveAt;
     d.querySelector('[data-recheck]').onclick=()=>{
       if(!editable())return;const row=state.rows.find(x=>x.key===r.key);
-      row.status='verifying';row.message='Повторная проверка без Update';row.saveDoc=DOC;state.index=state.rows.indexOf(row);state.phase='verifying';persist();d.remove();start(true);
+      row.status='verifying';row.message='Повторная проверка без Update';row.saveDoc=DOC;state.index=-1;state.phase='idle';persist();d.remove();launchCourse(true);
     };
     d.querySelector('[data-reset]').onclick=()=>{
       if(!editable())return;const row=state.rows.find(x=>x.key===r.key);
@@ -683,20 +855,24 @@
   function renderLog(){if(root)$('logs').innerHTML=state.logs.slice().reverse().map(x=>`<div class="log ${esc(x.level)}"><time>${new Date(x.time).toLocaleTimeString()}</time><span>${x.row?'№ '+x.row:'Система'}</span><span>${esc(x.message)}</span></div>`).join('')||'<div class="empty">Журнал пуст</div>';}
   function render(){
     if(!root)return;
+    if(!IS_COURSE_WORKER && !working)state=mergedCourseState();
     const count=statuses=>state.rows.filter(r=>statuses.includes(r.status)).length;
     $('total').textContent=state.rows.length;$('done').textContent=count(['done']);$('pending').textContent=count(['pending',...ACTIVE]);$('failed').textContent=count(['error','review']);
     $('bar').style.width=(state.rows.length?100*count(['done','skipped'])/state.rows.length:0)+'%';
     const current=state.rows[state.index];
-    $('current').textContent=(working||state.running)?(halted?'Остановка после текущей операции':`${STATUSES[current?.status]||'Работа'} · ${current?.name||current?.id||''}`):
+    const ws=state.poolWorkers||[];
+    $('current').textContent=ws.length?('Рабочие вкладки: '+ws.filter(x=>x.live).length+'/'+ws.length+' · '+ws.map(x=>'№'+x.id+': '+x.done+'/'+x.total+(x.live?' работает':'')).join(' · ')):
+      (working||state.running)?(halted?'Остановка после текущей операции':`${STATUSES[current?.status]||'Работа'} · ${current?.name||current?.id||''}`):
       state.paused?'На паузе — нажмите Продолжить':state.rows.length?`${state.filename} · ${SITE}`:'Загрузите Excel с товарами';
     const hasWork=state.rows.some(x=>x.status==='pending'||ACTIVE.has(x.status));
-    const isActive=working||!!state.running;
+    const isActive=working||!!state.running||poolBusy();
     $('start').disabled=isActive||!hasWork;$('one').disabled=isActive||!hasWork;$('stop').disabled=!isActive;$('pause').disabled=!isActive||halted;
     $('start').textContent=state.paused||state.rows.some(x=>ACTIVE.has(x.status))?'▶ Продолжить':'▶ Начать';
-    $('retry').disabled=working||!state.rows.some(x=>x.status==='error'&&!x.invalid);
+    $('retry').disabled=isActive||!state.rows.some(x=>x.status==='error'&&!x.invalid);
     $('load').disabled=isActive;$('reset').disabled=isActive;
-    $('delay').disabled=isActive;$('stopOnError').disabled=isActive;
+    $('delay').disabled=isActive;$('stopOnError').disabled=isActive;$('workers').disabled=isActive;
     $('delay').value=state.settings.delay;$('stopOnError').checked=!!state.settings.stopOnError;
+    $('workers').value=Math.max(1,Math.min(5,Number(state.settings.workers)||1));
     $('updated').textContent=state.updated?`Сохранено ${new Date(state.updated).toLocaleTimeString()} · ${SITE}`:`Очередь хранится отдельно для ${SITE}`;
     root.querySelector('[data-tab="processed"]').textContent=`Обработанные (${count(['done','review'])})`;
     if(['queue','processed'].includes(tab))renderRows();if(tab==='log')renderLog();
@@ -725,26 +901,75 @@
     if(!w)notice('Браузер заблокировал новую вкладку. Разрешите всплывающие окна для сайта.');
   }
   function launchCourse(oneOnly){
-    if(working){notice('Редактор курсов уже выполняет задачу.');return;}
-    const fresh=GM_getValue(KEY,empty());
-    if(GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.status==='running'){
-      notice('Редактор дат выполняет обновления на этом сайте. Сначала поставьте его на паузу.');return;
+    if(working || IS_COURSE_WORKER){notice('Запустите очередь из основной панели.');return;}
+    const dates=GM_getValue('bwo.smm.dates.v2.'+SITE,null);
+    if(dates?.status==='running'||dates?.phase==='saving'){notice('Редактор дат работает на этом сайте. Сначала остановите его.');return;}
+    if(poolBusy()){notice('Рабочие вкладки курсов уже активны.');return;}
+    const legacy=GM_getValue(MASTER_KEY+'.lease',null);
+    if(legacy?.expires>Date.now()){notice('Предыдущий обработчик курсов ещё активен.');return;}
+    const base=consolidatePool();
+    if(!base){notice('Рабочие потоки ещё завершают задачи.');return;}
+    const uncertain=base.rows.filter(r=>['saving','verifying'].includes(r.status)&&!r.expected);
+    if(uncertain.length){
+      for(const row of uncertain){
+        row.status='review';
+        row.message='Предыдущая операция сохранения не имеет данных для проверки. Проверьте товар вручную.';
+      }
+      GM_setValue(MASTER_KEY,base);
     }
-    const lease=GM_getValue(LEASE,null);
-    if(lease&&lease.expires>Date.now()){notice('Очередь курсов уже запущена в другой вкладке.');return;}
-    const row=fresh.rows.find(r=>r.status==='pending'||ACTIVE.has(r.status));
-    if(!row){notice('Нет курсов в очереди. Импортируйте Excel.');return;}
-    const url=new URL(productURL(row.id));
-    url.searchParams.set('smm_manager','course-worker');
-    url.searchParams.set('smm_one',oneOnly?'1':'0');
-    const w=window.open(url.href,'smm-manager-courses-'+SITE);
-    if(!w)notice('Браузер заблокировал рабочую вкладку. Разрешите всплывающие окна.');
+    // A previous Update with expected values is verified only; it is never submitted again.
+    const jobs=[...base.rows.filter(r=>['saving','verifying'].includes(r.status)&&r.expected),
+      ...base.rows.filter(r=>r.status==='pending'||['opening','filling'].includes(r.status))];
+    if(!jobs.length){notice('Нет курсов в очереди. Для товара со статусом «Проверить» используйте проверку без Update.');return;}
+    const picked=oneOnly?jobs.slice(0,1):jobs;
+    const amount=oneOnly?1:Math.min(5,picked.length,Math.max(1,Math.round(Number(base.settings?.workers)||1)));
+    const pool={run:uid(),workers:Array.from({length:amount},(_,i)=>i+1),createdAt:Date.now(),oneOnly};
+    const buckets=pool.workers.map(()=>[]);
+    picked.forEach((row,i)=>buckets[i%amount].push({...row,status:['opening','filling'].includes(row.status)?'pending':row.status}));
+    for(let i=0;i<amount;i++){
+      const shard=empty();
+      shard.run=pool.run;shard.filename=base.filename;shard.single=oneOnly;
+      shard.settings={...empty().settings,...base.settings};shard.rows=buckets[i];
+      GM_setValue(workerKey(i+1),shard);
+      GM_setValue(workerKey(i+1)+'.lease',null);
+      GM_setValue(workerKey(i+1)+'.command',null);
+    }
+    GM_setValue(POOL_KEY,pool);
+    let opened=0;
+    // Only N named tabs are opened per launch. All subsequent courses use location.assign in those tabs.
+    for(let i=0;i<amount;i++){
+      const url=new URL(productURL(buckets[i][0].id));
+      url.searchParams.set('smm_manager','course-worker');
+      url.searchParams.set('smm_worker',String(i+1));
+      url.searchParams.set('smm_run',pool.run);
+      url.searchParams.set('smm_one',oneOnly?'1':'0');
+      if(window.open(url.href,WORKER_PREFIX+(i+1)))opened++;
+    }
+    state=mergedCourseState();render();
+    if(opened<amount)notice('Открыто '+opened+' из '+amount+' вкладок. Разрешите всплывающие окна для сайта.');
+  }
+  function pauseOtherCourseWorkers(){
+    if(!IS_COURSE_WORKER||!state.settings.stopOnError)return;
+    const pool=currentPool();
+    if(!pool||pool.run!==state.run)return;
+    for(const id of pool.workers){
+      if(id===WORKER_ID)continue;
+      GM_setValue(workerKey(id)+'.command',{kind:'pause',run:pool.run,at:Date.now(),id:uid()});
+    }
   }
   function stopCourseFromPanel(pause){
-    if(working){stop(pause);return;}
-    if(!GM_getValue(KEY,empty()).running){notice('Очередь курсов сейчас не выполняется.');return;}
-    GM_setValue(COMMAND,{kind:pause?'pause':'stop',at:Date.now(),id:uid()});
+    if(IS_COURSE_WORKER){stop(pause);return;}
+    const pool=currentPool();
+    if(!pool){notice('Очередь курсов сейчас не выполняется.');return;}
+    let active=0;
+    for(const id of pool.workers){
+      if(activeLease(id))active++;
+      // Persist the command even for a tab that is still loading or navigating.
+      GM_setValue(workerKey(id)+'.command',{kind:pause?'pause':'stop',run:pool.run,id:uid(),at:Date.now()});
+    }
+    notice((pause?'Пауза':'Стоп')+' отправлена для '+pool.workers.length+' потоков; активных: '+active+'.');
   }
+
   const css=`
     .module-nav{display:flex;gap:8px;padding:9px 14px;background:#eef3fb;border-bottom:1px solid #d6e1ef;align-items:center}
     .module-actions{display:flex;gap:8px;flex-wrap:wrap}
@@ -1080,13 +1305,13 @@ function initializeDateManager(root, context) {
   }
 
   function storeImported(ids, source) {
-    searchCache.clear();
     if (state.status === 'running') { log('Сначала поставьте скрипт на паузу, затем заменяйте список ID', 'error'); return; }
+    searchCache.clear();
     ids = unique(ids);
     if (!ids.length) { log('Не удалось найти числовые ID в выбранном столбце', 'error'); return; }
     if (state.records.length && !confirm('Заменить текущий список и сбросить историю? Перед заменой скачайте отчет, если он нужен.')) return;
-    const { dateFrom, dateTo } = state;
-    state = { ...emptyState(), dateFrom, dateTo };
+    const { dateFrom, dateTo, delayMs, fastMode, prefetch } = state;
+    state = { ...emptyState(), dateFrom, dateTo, delayMs, fastMode, prefetch };
     state.ids = ids;
     state.source = source;
     state.lastMessage = `Загружено ${ids.length} уникальных ID. Нажмите «Тест: 3 ID» или «Старт».`;
@@ -1116,13 +1341,12 @@ function initializeDateManager(root, context) {
     if (!file) return;
     try {
       let rows, sheetName = 'Текст';
-      if (/\.(xlsx|xls|csv|tsv)$/i.test(file.name) && typeof XLSX !== 'undefined') {
+      if (/\.(xlsx|xls|csv|tsv)$/i.test(file.name)) {
+        const xlsx = await ensureXLSX();
         const bytes = await file.arrayBuffer();
-        const wb = XLSX.read(bytes, {type:'array'});
+        const wb = xlsx.read(bytes, {type:'array'});
         sheetName = wb.SheetNames[0];
-        rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], {header:1, raw:false, defval:''});
-      } else if (/\.(xlsx|xls)$/i.test(file.name)) {
-        throw new Error('Библиотека Excel не загрузилась. Проверьте интернет или сохраните файл как CSV.');
+        rows = xlsx.utils.sheet_to_json(wb.Sheets[sheetName], {header:1, raw:false, defval:''});
       } else {
         const txt = await file.text();
         rows = txt.split(/\r?\n/).map(s => s.split(/[;,\t]/));
@@ -1321,6 +1545,11 @@ function initializeDateManager(root, context) {
     busy = true;
     try {
       while (state.status === 'running' && state.index < state.ids.length) {
+        if (unsafeWindow.__SMM_RANDOM_DATES__ || window.__SMM_RANDOM_DATES__) {
+          state.status = 'paused'; save();
+          log('Найден активный старый скрипт редактора дат. Отключите smmmaster_random_dates.user.js в Tampermonkey.', 'error');
+          break;
+        }
         const id = state.ids[state.index];
         const visibleId = new URLSearchParams(location.search).get('s') || '';
         if (visibleId !== id) {
@@ -1359,12 +1588,27 @@ function initializeDateManager(root, context) {
     } finally { busy = false; draw(); }
   }
   function start(limit = null) {
-    if (window.__SMM_RANDOM_DATES__) {
+    if (unsafeWindow.__SMM_RANDOM_DATES__ || window.__SMM_RANDOM_DATES__) {
       log('Обнаружен старый отдельный smmmaster_random_dates.user.js. Отключите его в Tampermonkey, чтобы избежать двойной обработки.', 'error');
       return;
     }
-    const courseState = GM_getValue('bwo.wc.course.product.v1.'+SITE, null);
-    if (courseState?.running) { log('Редактор курсов сейчас выполняет обновления на этом сайте. Дождитесь завершения.', 'error'); return; }
+    const courseKey = 'bwo.wc.course.product.v1.' + SITE;
+    const courseState = GM_getValue(courseKey, null);
+    const courseLease = GM_getValue(courseKey + '.lease', null);
+    const coursePool = GM_getValue(courseKey + '.pool', null);
+    const liveCoursePool = coursePool?.workers?.some(id => {
+      const key = courseKey + '.worker.' + id;
+      const lease = GM_getValue(key + '.lease',null);
+      const shard = GM_getValue(key,null);
+      const live = lease?.expires > Date.now();
+      const recentlySaving = shard?.run === coursePool.run && shard?.running &&
+        Date.now()-Date.parse(shard.updated||0)<120000;
+      return live || recentlySaving;
+    });
+    if (courseState?.running || (courseLease && courseLease.expires > Date.now()) ||
+        liveCoursePool || (coursePool && Date.now()-coursePool.createdAt < 20000)) {
+      log('Редактор курсов сейчас выполняет обновления на этом сайте. Дождитесь завершения.', 'error'); return;
+    }
     if (!state.ids.length) { log('Сначала загрузите список ID', 'error'); return; }
     if (state.index >= state.ids.length) { log('Все ID обработаны. Сбросьте или загрузите новый список.'); return; }
     if (!dateRange()) { log('Укажите корректный диапазон дат: дата «От» не позже даты «До».', 'error'); return; }
@@ -1411,22 +1655,24 @@ function initializeDateManager(root, context) {
     const labels = {updated:'Обновлено',found:'Найдено, без изменений',missing:'Не найдено',error:'Ошибка'};
     return [['ID','Статус','Новая дата (время сайта)','Детали'], ...selected.map(r => [r.id,labels[r.status] || r.status,r.date || '',r.detail || ''])];
   }
-  function reportExcel() {
-    if (typeof XLSX === 'undefined') {
-      log('Не загружена Excel-библиотека. Отчет сохранен в CSV.', 'error');
+  async function reportExcel() {
+    let xlsx;
+    try{xlsx=await ensureXLSX();}
+    catch(e){
+      log('Не загружена Excel-библиотека. Отчет сохранен в CSV: '+e.message, 'error');
       exportCsv(reportRows(), 'smmmaster_report.csv'); return;
     }
-    const wb = XLSX.utils.book_new();
+    const wb = xlsx.utils.book_new();
     for (const [sheet, subset] of [
       ['Все результаты',state.records], ['Обновлены',state.records.filter(r => r.status === 'updated')],
       ['Не найдены',state.records.filter(r => r.status === 'missing')],
       ['Ошибки',state.records.filter(r => r.status === 'error')]
     ]) {
-      const ws = XLSX.utils.aoa_to_sheet(reportRows(subset));
+      const ws = xlsx.utils.aoa_to_sheet(reportRows(subset));
       ws['!cols'] = [{wch:15},{wch:28},{wch:24},{wch:65}];
-      XLSX.utils.book_append_sheet(wb, ws, sheet);
+      xlsx.utils.book_append_sheet(wb, ws, sheet);
     }
-    XLSX.writeFile(wb, 'smmmaster_dates_report.xlsx');
+    xlsx.writeFile(wb, 'smmmaster_dates_report.xlsx');
     log('Excel-отчёт выгружен.');
   }
 
@@ -1471,8 +1717,8 @@ function initializeDateManager(root, context) {
   $('#smm-reset').addEventListener('click', () => {
     if (state.status === 'running') { log('Сначала поставьте скрипт на паузу', 'error'); return; }
     if (!confirm('Удалить загруженную очередь и историю результатов в этом браузере?')) return;
-    const { dateFrom, dateTo } = state;
-    state = { ...emptyState(), dateFrom, dateTo }; save(); draw();
+    const { dateFrom, dateTo, delayMs, fastMode, prefetch } = state;
+    state = { ...emptyState(), dateFrom, dateTo, delayMs, fastMode, prefetch }; save(); draw();
   });
   $('#smm-dry').addEventListener('change', e => { state.dryRun = e.target.checked; save(); });
   $('#smm-delay').addEventListener('change', e => {
@@ -1501,11 +1747,14 @@ function initializeDateManager(root, context) {
   }
 }
   function mount(){
+    if(typeof css!=='string'||!css.includes('.panel{')){
+      throw new Error('Не загружены стили панели (css). Версия: '+SCRIPT_VERSION);
+    }
     const host=document.createElement('div');host.id='bwo-woo-course-manager';host.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:2147483646';document.documentElement.append(host);
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>Редактор курсов для SMM курсов</b><small>${esc(SITE)} · v1.2.1</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.3.11</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
@@ -1516,24 +1765,26 @@ function initializeDateManager(root, context) {
       <div id="mapping" class="hidden"><div class="mapping"><label>ID товара</label><select id="map-id"></select><label>Name</label><select id="map-name"></select><label>Description (HTML)</label><select id="map-description"></select><label>Regular price</label><select id="map-price"></select><label>lessons</label><select id="map-lessons"></select><label>img (14 цифр)</label><select id="map-img"></select><label>Лист</label><select id="sheet"></select></div><p class="hint">При импорте цена 3.42€ распознаётся как 3.42, а в поле WooCommerce записывается 3,42. Колонка img — имя загруженного изображения из 14 цифр, НЕ WordPress attachment ID. Очередь перемешивается автоматически.</p><button class="primary" id="load">Загрузить в очередь</button></div>
       <div class="notice">Строки проверяются до запуска. Новая загрузка заменяет текущую очередь; скачайте отчёт, если он нужен. Обрабатываются только товары сайта <b>${esc(SITE)}</b>.</div></div>
       <div class="view hidden" id="log"><div class="tools"><button id="downloadLog">↓ Скачать журнал</button><span class="hint">Последние 2000 событий</span></div><div id="logs"></div></div>
-      <div class="view hidden" id="settings"><label class="setting"><div>Пауза между товарами<small>В секундах после проверки результата</small></div><input id="delay" type="number" min="1" max="60" value="3"></label><label class="setting"><input id="stopOnError" type="checkbox" checked><div>Останавливаться при ошибке<small>Рекомендуется: ошибка может оставить несохранённые изменения в редакторе</small></div></label><div class="setting"><div>Перемешивание Excel<small>Однократно при каждом импорте; исходные номера строк сохраняются</small></div><span class="tag done">Всегда</span></div><div class="setting"><div>Downloadable<small>Флажок снимается у каждого товара</small></div><span class="tag done">Всегда</span></div><button id="backup">↓ Резервная копия JSON</button></div>
+      <div class="view hidden" id="settings"><label class="setting"><div>Параллельных потоков<small>От 1 до 5 рабочих вкладок. Каждая вкладка обрабатывает много курсов по очереди — новые вкладки не создаются для каждого товара.</small></div><input id="workers" type="number" min="1" max="5" step="1" value="1"></label><label class="setting"><div>Пауза между товарами<small>В секундах после проверки результата</small></div><input id="delay" type="number" min="1" max="60" value="3"></label><label class="setting"><input id="stopOnError" type="checkbox" checked><div>Останавливаться при ошибке<small>Рекомендуется: ошибка может оставить несохранённые изменения в редакторе</small></div></label><div class="setting"><div>Перемешивание Excel<small>Однократно при каждом импорте; исходные номера строк сохраняются</small></div><span class="tag done">Всегда</span></div><div class="setting"><div>Downloadable<small>Флажок снимается у каждого товара</small></div><span class="tag done">Всегда</span></div><button id="backup">↓ Резервная копия JSON</button></div>
       <div class="view help hidden" id="help"><h3>1. Подготовьте Excel</h3><p>Первая строка: <b>ID, Name, Description, Regular price, lessons, img</b>. ID — существующий post ID товара. Description — HTML, как в редакторе WordPress. Regular price может быть с € или запятой. lessons — целое положительное число. img — 14-значное имя уже загруженной фотографии в Media Library (не внутренний attachment ID).</p>
       <h3>2. Импортируйте товары</h3><ol><li>Войдите в <b>${esc(SITE)}</b> как администратор.</li><li>Откройте «Импорт Excel», выберите файл, лист и шесть колонок.</li><li>Нажмите «Загрузить в очередь». Курсы будут перемешаны; номера исходных строк останутся в отчёте.</li><li>Нажмите «Один товар» и проверьте сохранённые поля на сайте; после этого нажмите «Начать» для остальных.</li></ol>
-      <h3>3. Что делает скрипт</h3><p>Открывает <code>/wp-admin/post.php?post=ID&amp;action=edit</code>. Заполняет Name и slug, переключает редактор Description в Text, вставляет HTML и возвращается в Visual. Меняет Regular price и ACF lessons, снимает Downloadable, удаляет старую обложку, ищет точную фотографию по img и нажимает Set product image. После проверки полей нажимает Update и перезагружает товар для сверки.</p>
-      <h3>4. Пауза, ошибки и безопасность</h3><p>Не редактируйте страницу вручную во время работы. Пауза останавливает новые действия, но не отменяет отправленный Update. После сохранения статус «Выполнено» ставится только после сверки на новой странице. Если данные не совпали — «Проверить», повторный Update автоматически не выполняется. Для такого товара доступна проверка без Update через «⋯».</p><p>Если произошла ошибка, исправьте причину, затем «Повторить ошибки». Неверные строки Excel исправляются только повторным импортом. Скачивайте отчёт и журнал. Очереди и настройки независимы для каждого сайта: <b>smmmaster.net, hottestcourse.com, learnmarket.net, profcourse.com, bestsocials.online</b>.</p>
+      <h3>3. Как работают потоки</h3><p>На вкладке «Настройки» выберите от 1 до 5 потоков. Один поток использует одну рабочую вкладку и последовательно обрабатывает все назначенные курсы. Например, для 400 товаров и 5 потоков создаётся пять вкладок примерно по 80 товаров. Все следующие товары открываются переходом в тех же вкладках. Не закрывайте рабочие вкладки до завершения.</p>
+      <h3>4. Что делает скрипт</h3><p>Открывает <code>/wp-admin/post.php?post=ID&amp;action=edit</code>. Заполняет Name и slug, переключает редактор Description в Text, вставляет HTML и возвращается в Visual. Меняет Regular price и ACF lessons, снимает Downloadable, удаляет старую обложку, ищет точную фотографию по img и нажимает Set product image. После проверки полей нажимает Update и перезагружает товар для сверки.</p>
+      <h3>5. Пауза, ошибки и безопасность</h3><p>Не редактируйте страницу вручную во время работы. Пауза останавливает новые действия, но не отменяет отправленный Update. После сохранения статус «Выполнено» ставится только после сверки на новой странице. Если данные не совпали — «Проверить», повторный Update автоматически не выполняется. Для такого товара доступна проверка без Update через «⋯».</p><p>Если произошла ошибка, исправьте причину, затем «Повторить ошибки». Неверные строки Excel исправляются только повторным импортом. Скачивайте отчёт и журнал. Очереди и настройки независимы для каждого сайта: <b>smmmaster.net, hottestcourse.com, learnmarket.net, profcourse.com, bestsocials.online</b>.</p>
       <h3>Ограничения</h3><p>Скрипт рассчитан на Classic WordPress / WooCommerce и указанные элементы ACF. В отдельных темах или версиях админки разметка может отличаться. При отсутствии нужных полей скрипт останавливается до Update.</p></div>
       <footer class="foot"><span id="updated">Очередь хранится локально</span><button id="prev">←</button><span id="pages" style="flex:none">1 / 1</span><button id="next">→</button></footer></div><div class="body hidden" id="date-content"></div></section>`;
     panel=$('panel');
     const on=(id,ev,fn)=>$(id).addEventListener(ev,fn);
     on('start','click',()=>launchCourse(false));on('one','click',()=>launchCourse(true));on('pause','click',()=>stopCourseFromPanel(true));on('stop','click',()=>stopCourseFromPanel(false));
     on('retry','click',retryErrors);on('report','click',exportReport);on('downloadLog','click',exportLog);on('reset','click',resetAll);
-    on('load','click',loadQueue);on('backup','click',()=>download(JSON.stringify(state,null,2),`${SITE}-woo-products-backup.json`,'application/json'));
+    on('load','click',loadQueue);on('backup','click',()=>download(JSON.stringify(IS_COURSE_WORKER?state:mergedCourseState(),null,2),`${SITE}-woo-products-backup.json`,'application/json'));
     on('file','change',e=>readFile(e.target.files[0]));on('sheet','change',setMapping);
     const drop=$('drop');drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('over');});drop.addEventListener('dragleave',()=>drop.classList.remove('over'));drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('over');readFile(e.dataTransfer.files[0]);});
     root.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>switchTab(b.dataset.tab)));
     on('search','input',e=>{search=e.target.value;page=0;renderRows();});on('filter','change',e=>{filter=e.target.value;page=0;renderRows();});
     on('prev','click',()=>{page=Math.max(0,page-1);renderRows();});on('next','click',()=>{page++;renderRows();});
     on('delay','change',e=>{if(!editable())return;state.settings.delay=Math.min(60,Math.max(1,Number(e.target.value)||3));persist();render();});
+    on('workers','change',e=>{if(!editable())return;state.settings.workers=Math.max(1,Math.min(5,Math.round(Number(e.target.value)||1)));persist();render();});
     on('stopOnError','change',e=>{if(!editable())return;state.settings.stopOnError=e.target.checked;persist();render();});
     on('min','click',()=>{panel.classList.add('hidden');$('pill').classList.remove('hidden');});
     const show=()=>{panel.classList.remove('hidden');$('pill').classList.add('hidden');};
@@ -1559,7 +1810,9 @@ function initializeDateManager(root, context) {
       $('dashboard').textContent='Панель открыта отдельно';
       $('dashboard').disabled=true;
     } else if(IS_COURSE_WORKER || SMM_PARAMS.get('smm_manager')==='date-worker') {
+      // Workers use the compact launcher while editing, but retain a visible way to show the full panel.
       panel.classList.add('hidden');$('pill').classList.remove('hidden');
+      $('pill').textContent='SMM Manager · Открыть панель';
     }
     selectModule(GM_getValue(MODE_KEY,'courses'));
     render();if(state.rows.length)switchTab('queue');
@@ -1569,27 +1822,61 @@ function initializeDateManager(root, context) {
     window.addEventListener('error',e=>{if(e.message)record(e.message);},true);
     window.addEventListener('unhandledrejection',e=>record(String(e.reason?.message||e.reason||'Unhandled rejection')));
   }
-  GM_getTab(async data=>{
-    tabId=data.wcCourseProductTabId||uid();data.wcCourseProductTabId=tabId;GM_saveTab(data);
+  let bootStarted=false;
+  async function bootManager(data={}){
+    if(bootStarted)return;
+    bootStarted=true;
+    try{
+    const tabData=data&&typeof data==='object'?data:{};
+    const savedWorkerId=IS_COURSE_WORKER?sessionStorage.getItem(WORKER_TAB_SESSION):null;
+    tabId=savedWorkerId||tabData.wcCourseProductTabId||uid();
+    if(IS_COURSE_WORKER)sessionStorage.setItem(WORKER_TAB_SESSION,tabId);
+    tabData.wcCourseProductTabId=tabId;
+    try{GM_saveTab(tabData);}catch(err){console.warn('[SMM Course Manager] GM_saveTab:',err);}
     let ticket;try{ticket=JSON.parse(sessionStorage.getItem(TICKET)||'null');}catch{ticket=null;}
     sessionStorage.removeItem(TICKET);
     mount();captureErrors();
-    GM_addValueChangeListener(KEY,(name,oldValue,newValue,remote)=>{
-      if(remote&&!working&&newValue&&typeof newValue==='object'){state=newValue;render();}
-    });
-    GM_addValueChangeListener(COMMAND,(name,oldValue,newValue,remote)=>{
-      if(remote&&working&&newValue&&(newValue.kind==='pause'||newValue.kind==='stop'))
-        stop(newValue.kind==='pause');
-    });
-    const row=state.rows[state.index];
-    if(SMM_PARAMS.get('smm_manager')==='course-worker'&&!ticket){
-      window.name='smm-manager-courses-'+SITE;
-      await start(SMM_PARAMS.get('smm_one')==='1');
-    }else if(ticket&&row&&ticket.tab===tabId&&ticket.run===state.run&&ticket.id===row.id&&Date.now()-ticket.at<180000){
-      log('info','Новая страница загружена: продолжаем очередь.',row);
-      await start(state.single,true);
-    }else if(state.running&&IS_COURSE_WORKER){
-      state.running=false;state.paused=true;persist();log('warn','Автопереход рабочего процесса не подтверждён. Продолжите через панель управления.',row);
+    if(IS_COURSE_WORKER){
+      GM_addValueChangeListener(COMMAND,(name,oldValue,newValue,remote)=>{
+        if(remote&&working&&newValue?.run===state.run&&['pause','stop'].includes(newValue.kind))
+          stop(newValue.kind==='pause');
+      });
+    } else {
+      const refresh=()=>{if(!working){state=mergedCourseState();render();}};
+      GM_addValueChangeListener(MASTER_KEY,(name,oldValue,newValue,remote)=>{if(remote)refresh();});
+      GM_addValueChangeListener(POOL_KEY,(name,oldValue,newValue,remote)=>{if(remote)refresh();});
+      for(let i=1;i<=5;i++)
+        GM_addValueChangeListener(workerKey(i),(name,oldValue,newValue,remote)=>{if(remote)refresh();});
     }
-  });
+    const row=state.rows[state.index];
+    // An old ticket can survive if the same named tab is reused for a new run.
+    // A fresh worker launch URL must not be blocked by a stale ticket.
+    if(IS_COURSE_WORKER&&SMM_PARAMS.get('smm_manager')==='course-worker'&&
+      (!ticket || ticket.run!==state.run || ticket.id!==row?.id)){
+      if(SMM_PARAMS.get('smm_run')===state.run){
+        await start(SMM_PARAMS.get('smm_one')==='1');
+      } else notice('Ссылка рабочего процесса устарела — задача не запущена.');
+    }else if(IS_COURSE_WORKER&&ticket&&row&&ticket.tab===tabId&&ticket.run===state.run&&ticket.id===row.id&&Date.now()-ticket.at<180000){
+      log('info','Новая страница в том же рабочем потоке: продолжаем очередь.',row);
+      await start(state.single,true);
+    }else if(IS_COURSE_WORKER&&state.running&&row&&
+      ['saving','verifying'].includes(row.status)&&row.expected&&
+      productIDFromURL(location.href)===row.id&&currentPool()?.run===state.run){
+      // Ticket can be lost across WP redirects; verify only, never re-submit Update.
+      log('warn','Билет перехода не восстановился. Проверяю сохранение на открытой странице без повторного Update.',row);
+      await start(state.single,true);
+    }else if(IS_COURSE_WORKER&&state.running){
+      state.running=false;state.paused=true;persist();
+      log('warn','Автопереход не подтверждён. Поток приостановлен; дальнейшие Update не выполняются.',row);
+    }
+    bootLauncher.remove();
+    }catch(err){fatalLauncher(err);}
+  }
+  try{
+    if(typeof GM_getTab==='function')GM_getTab(data=>{bootManager(data).catch(fatalLauncher);});
+    else bootManager({}).catch(fatalLauncher);
+  }catch(err){bootManager({}).catch(fatalLauncher);}
+  // Use the same boot fallback on workers: GM_getTab callback can fail after WP redirects.
+  // Worker identity and the ticket survive via sessionStorage.
+  setTimeout(()=>{if(!bootStarted)bootManager({}).catch(fatalLauncher);},3500);
 })();

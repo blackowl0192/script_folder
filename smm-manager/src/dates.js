@@ -308,13 +308,13 @@ function initializeDateManager(root, context) {
   }
 
   function storeImported(ids, source) {
-    searchCache.clear();
     if (state.status === 'running') { log('Сначала поставьте скрипт на паузу, затем заменяйте список ID', 'error'); return; }
+    searchCache.clear();
     ids = unique(ids);
     if (!ids.length) { log('Не удалось найти числовые ID в выбранном столбце', 'error'); return; }
     if (state.records.length && !confirm('Заменить текущий список и сбросить историю? Перед заменой скачайте отчет, если он нужен.')) return;
-    const { dateFrom, dateTo } = state;
-    state = { ...emptyState(), dateFrom, dateTo };
+    const { dateFrom, dateTo, delayMs, fastMode, prefetch } = state;
+    state = { ...emptyState(), dateFrom, dateTo, delayMs, fastMode, prefetch };
     state.ids = ids;
     state.source = source;
     state.lastMessage = `Загружено ${ids.length} уникальных ID. Нажмите «Тест: 3 ID» или «Старт».`;
@@ -549,6 +549,11 @@ function initializeDateManager(root, context) {
     busy = true;
     try {
       while (state.status === 'running' && state.index < state.ids.length) {
+        if (unsafeWindow.__SMM_RANDOM_DATES__ || window.__SMM_RANDOM_DATES__) {
+          state.status = 'paused'; save();
+          log('Найден активный старый скрипт редактора дат. Отключите smmmaster_random_dates.user.js в Tampermonkey.', 'error');
+          break;
+        }
         const id = state.ids[state.index];
         const visibleId = new URLSearchParams(location.search).get('s') || '';
         if (visibleId !== id) {
@@ -587,12 +592,27 @@ function initializeDateManager(root, context) {
     } finally { busy = false; draw(); }
   }
   function start(limit = null) {
-    if (window.__SMM_RANDOM_DATES__) {
+    if (unsafeWindow.__SMM_RANDOM_DATES__ || window.__SMM_RANDOM_DATES__) {
       log('Обнаружен старый отдельный smmmaster_random_dates.user.js. Отключите его в Tampermonkey, чтобы избежать двойной обработки.', 'error');
       return;
     }
-    const courseState = GM_getValue('bwo.wc.course.product.v1.'+SITE, null);
-    if (courseState?.running) { log('Редактор курсов сейчас выполняет обновления на этом сайте. Дождитесь завершения.', 'error'); return; }
+    const courseKey = 'bwo.wc.course.product.v1.' + SITE;
+    const courseState = GM_getValue(courseKey, null);
+    const courseLease = GM_getValue(courseKey + '.lease', null);
+    const coursePool = GM_getValue(courseKey + '.pool', null);
+    const liveCoursePool = coursePool?.workers?.some(id => {
+      const key = courseKey + '.worker.' + id;
+      const lease = GM_getValue(key + '.lease',null);
+      const shard = GM_getValue(key,null);
+      const live = lease?.expires > Date.now();
+      const recentlySaving = shard?.run === coursePool.run && shard?.running &&
+        Date.now()-Date.parse(shard.updated||0)<120000;
+      return live || recentlySaving;
+    });
+    if (courseState?.running || (courseLease && courseLease.expires > Date.now()) ||
+        liveCoursePool || (coursePool && Date.now()-coursePool.createdAt < 20000)) {
+      log('Редактор курсов сейчас выполняет обновления на этом сайте. Дождитесь завершения.', 'error'); return;
+    }
     if (!state.ids.length) { log('Сначала загрузите список ID', 'error'); return; }
     if (state.index >= state.ids.length) { log('Все ID обработаны. Сбросьте или загрузите новый список.'); return; }
     if (!dateRange()) { log('Укажите корректный диапазон дат: дата «От» не позже даты «До».', 'error'); return; }
@@ -699,8 +719,8 @@ function initializeDateManager(root, context) {
   $('#smm-reset').addEventListener('click', () => {
     if (state.status === 'running') { log('Сначала поставьте скрипт на паузу', 'error'); return; }
     if (!confirm('Удалить загруженную очередь и историю результатов в этом браузере?')) return;
-    const { dateFrom, dateTo } = state;
-    state = { ...emptyState(), dateFrom, dateTo }; save(); draw();
+    const { dateFrom, dateTo, delayMs, fastMode, prefetch } = state;
+    state = { ...emptyState(), dateFrom, dateTo, delayMs, fastMode, prefetch }; save(); draw();
   });
   $('#smm-dry').addEventListener('change', e => { state.dryRun = e.target.checked; save(); });
   $('#smm-delay').addEventListener('change', e => {
