@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.1.1
+// @version      1.2.0
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -793,7 +793,7 @@ function initializeDateManager(root, context) {
     ids: [], index: 0, status: 'idle', phase: 'search',
     records: [], notes: [], lastMessage: 'Загрузите файл с ID',
     batchRemaining: null, dateCandidate: null, source: '',
-    missStreak: 0, delayMs: 350, fastMode: false, dryRun: false,
+    missStreak: 0, delayMs: 350, fastMode: false, prefetch: 2, dryRun: false,
     dateFrom: DEFAULT_DATE_FROM, dateTo: DEFAULT_DATE_TO,
     lastChanged: Date.now()
   });
@@ -993,6 +993,7 @@ function initializeDateManager(root, context) {
       <label class="caption">История операций</label><div class="log" id="smm-log" aria-live="polite"></div>
       <div class="options" style="margin-top:9px"><label>Пауза между ID (мс) <input id="smm-delay" type="number" min="200" max="15000" step="50" style="width:100px" /></label></div>
       <div class="options"><label><input id="smm-fast" type="checkbox" /> Ускоренный поиск (включать после теста 3 ID; есть резервный режим)</label></div>
+      <div class="options"><label>Параллельных запросов поиска (1–5) <input id="smm-prefetch" type="number" min="1" max="5" step="1" style="width:70px" /></label></div>
       <div class="sub">Случайная дата внутри диапазона; 00:00 исключено. При 5 последовательных отсутствующих ID — автопауза. Отключите старую отдельную версию редактора дат.</div>
       </div>
       <div id="smm-date-processed" class="hidden"><h3>Обработанные товары</h3><div id="smm-result-table"></div></div>
@@ -1004,7 +1005,7 @@ function initializeDateManager(root, context) {
         <li>Нажмите «Старт». Задания выполняются в отдельной рабочей вкладке, исходная панель остаётся на месте.</li>
         <li>Пауза запрещает переход к следующему товару, но не отменяет уже отправленный Update.</li>
         <li>Выгрузите XLSX-отчёт или CSV ненайденных ID.</li></ol>
-        <p>Изменения выполняются через стандартный WordPress Quick Edit. При ускоренном поиске скрипт получает HTML-строку товара без загрузки изображений/скриптов всей страницы. Если этот способ не сработал, используется обычный поиск. При неопределённом ответе Update скрипт останавливается.</p>
+        <p>Изменения выполняются через стандартный WordPress Quick Edit. Ускоренный поиск поддерживает 1–5 параллельных GET-запросов, но сохраняет даты последовательно через Quick Edit. Если этот способ не сработал, используется обычный поиск. При неопределённом ответе Update скрипт останавливается.</p>
       </div>
     </div>`;
   root.querySelector('#date-content').append(panel);
@@ -1041,6 +1042,8 @@ function initializeDateManager(root, context) {
     $('#smm-delay').disabled = state.status === 'running';
     $('#smm-fast').checked = !!state.fastMode;
     $('#smm-fast').disabled = state.status === 'running';
+    $('#smm-prefetch').value = String(Math.max(1,Math.min(5,Number(state.prefetch)||2)));
+    $('#smm-prefetch').disabled = state.status === 'running' || !state.fastMode;
     const resultTable = $('#smm-result-table');
     if (resultTable) {
       const e = val => String(val??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -1067,6 +1070,7 @@ function initializeDateManager(root, context) {
   }
 
   function storeImported(ids, source) {
+    searchCache.clear();
     if (state.status === 'running') { log('Сначала поставьте скрипт на паузу, затем заменяйте список ID', 'error'); return; }
     ids = unique(ids);
     if (!ids.length) { log('Не удалось найти числовые ID в выбранном столбце', 'error'); return; }
@@ -1240,6 +1244,32 @@ function initializeDateManager(root, context) {
       }
     }, 8000);
   }
+
+  // Parallelize read-only searches, never the Quick Edit Update itself.
+  const searchCache = new Map();
+  async function fetchSearchPage(id) {
+    const url = ORIGIN + '/wp-admin/edit.php?post_type=product&s=' + encodeURIComponent(id);
+    const response = await fetch(url,{credentials:'same-origin',cache:'no-store',redirect:'follow',signal:AbortSignal.timeout(18000)});
+    if (!response.ok || response.url.includes('wp-login.php')) throw new Error('Нет доступа к поиску товаров');
+    return (await response.text()).replace(/<img\b[^>]*>/gi,'');
+  }
+  function prefetchPages() {
+    if (!state.fastMode) return;
+    const limit = Math.max(1,Math.min(5,Number(state.prefetch)||2));
+    const upcoming = state.ids.slice(state.index,state.index+limit);
+    for (const key of searchCache.keys()) if (!upcoming.includes(key)) searchCache.delete(key);
+    for (const id of upcoming) {
+      if (!searchCache.has(id)) searchCache.set(id,fetchSearchPage(id).then(html=>({html}),error=>({error})));
+    }
+  }
+  async function getSearchPage(id) {
+    prefetchPages();
+    const task = searchCache.get(id) || fetchSearchPage(id).then(html=>({html}),error=>({error}));
+    const result = await task;
+    searchCache.delete(id);
+    if (result.error) throw result.error;
+    return result.html;
+  }
   // Fast path: fetch just the product-list HTML; never load its images/scripts.
   // Quick Edit / Update is still performed by native WordPress JavaScript.
   async function fastSearchAndEdit(id) {
@@ -1248,10 +1278,7 @@ function initializeDateManager(root, context) {
     const list = document.querySelector('#the-list');
     if (!list || !unsafeWindow.inlineEditPost || !document.querySelector('#inline-edit')) return false;
     try {
-      const url = ORIGIN + '/wp-admin/edit.php?post_type=product&s=' + encodeURIComponent(id);
-      const response = await fetch(url,{credentials:'same-origin',cache:'no-store',redirect:'follow',signal:AbortSignal.timeout(18000)});
-      if (!response.ok || response.url.includes('wp-login.php')) throw new Error('Нет доступа к поиску товаров');
-      const html = (await response.text()).replace(/<img\b[^>]*>/gi,'');
+      const html = await getSearchPage(id);
       const parsed = new DOMParser().parseFromString(html,'text/html');
       if (!parsed.querySelector('#the-list') || parsed.querySelector('#loginform')) throw new Error('Неполный HTML списка WordPress');
       const row = parsed.getElementById('post-' + id);
@@ -1440,6 +1467,10 @@ function initializeDateManager(root, context) {
     if (state.status === 'running') { e.target.checked=!!state.fastMode; return; }
     state.fastMode=e.target.checked; save(); draw();
   });
+  $('#smm-prefetch').addEventListener('change', e => {
+    if (state.status === 'running') { e.target.value=state.prefetch; return; }
+    state.prefetch=Math.max(1,Math.min(5,Math.round(Number(e.target.value)||2))); save(); draw();
+  });
   if (state.status === 'running' && state.phase === 'saving' && IS_DATE_WORKER) {
     state.status = 'paused';
     state.lastMessage = 'Страница перезагрузилась во время Update. Проверьте текущий ID вручную до продолжения.';
@@ -1458,7 +1489,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>Редактор курсов для SMM курсов</b><small>${esc(SITE)} · v1.1.1</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>Редактор курсов для SMM курсов</b><small>${esc(SITE)} · v1.2.0</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><button data-module="courses" class="active">1. Редактор курсов</button><button data-module="dates">2. Редактор дат</button><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
