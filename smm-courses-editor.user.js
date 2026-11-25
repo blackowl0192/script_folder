@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.5.0
+// @version      1.5.1
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -48,7 +48,7 @@
 
 (() => {
   'use strict';
-  const SCRIPT_VERSION='1.5.0';
+  const SCRIPT_VERSION='1.5.1';
   const HOSTS = new Set(['smmmaster.net', 'hottestcourse.com', 'learnmarket.net', 'profcourse.com', 'bestsocials.online']);
   const SITE = location.hostname.replace(/^www\./, '');
   if (location.protocol !== 'https:' || !HOSTS.has(SITE)) return;
@@ -183,10 +183,13 @@
       paused:workers.some(w=>w.paused),poolWorkers:workers,
       poolStarting:Date.now()-pool.createdAt<20000 && workers.some(w=>!w.live&&w.total&&!w.done)};
   }
-  function consolidatePool(){
+  function consolidatePool(recover=false){
     const pool=currentPool();
     if(!pool)return GM_getValue(MASTER_KEY,empty());
-    if(poolBusy(pool))return null;
+    // Manual recovery is permitted ONLY after all worker leases have expired,
+    // with a 20-second startup grace. It must not interrupt a live POST.
+    if(poolBusy(pool) && !(recover && !pool.workers.some(activeLease) &&
+      Date.now()-pool.createdAt>=20000))return null;
     const result=mergedCourseState();
     for(const row of result.rows){
       if(['saving','verifying'].includes(row.status)){
@@ -886,6 +889,56 @@
     state=consolidatePool()||GM_getValue(MASTER_KEY,empty());
     return true;
   }
+
+  async function verifyStalledFromDashboard(){
+    if(IS_COURSE_WORKER||working)return;
+    const pool=currentPool();
+    if(pool?.workers?.some(activeLease)){
+      notice('Нельзя проверять зависшие товары, пока рабочие вкладки ещё активны. Остановите их и дождитесь освобождения блокировок.');return;
+    }
+    if(pool&&Date.now()-pool.createdAt<20000){
+      notice('Рабочие потоки только запущены. Повторите проверку после завершения или остановки.');return;
+    }
+    const candidates=mergedCourseState().rows.filter(r=>r.expected&&r.saveAt&&
+      ['saving','verifying','review'].includes(r.status));
+    if(!candidates.length){notice('Нет товаров с отправленным Update для повторной проверки.');return;}
+    if(!confirm('Проверить сохранение товара ID '+candidates[0].id+
+      ' без повторного Update? Старые рабочие вкладки должны быть закрыты.'))return;
+    const base=consolidatePool(true);
+    if(!base){notice('Очередь ещё используется рабочим потоком.');return;}
+    state=base;
+    const row=state.rows.find(r=>r.expected&&r.saveAt&&
+      ['saving','verifying','review'].includes(r.status));
+    if(!row){notice('Не найден товар для проверки.');return;}
+    working=true;state.index=state.rows.indexOf(row);state.phase='verifying';
+    row.status='verifying';row.message='Ручная проверка после зависшего Update; повторный POST не отправляется.';
+    persist();render();
+    log('info','Начинаю восстановление зависшего товара '+row.id+' через GET WordPress без Update.',row);
+    let problem='';
+    try{
+      for(let attempt=1;attempt<=2;attempt++){
+        try{
+          const actual=await fetchSavedSnapshot(row);
+          row.actual=actual;row.checked=new Date().toISOString();persist();
+          const differencesList=differences(actual,row.expected);
+          if(!differencesList.length){
+            row.status='done';row.message='Сохранение подтверждено после восстановления';
+            log('ok',row.message,row);problem='';break;
+          }
+          problem='Не совпали поля: '+differencesList.join(', ');
+        }catch(ex){problem=ex.message||String(ex);}
+        log('warn','Восстановление, проверка '+attempt+'/2: '+problem,row);
+        if(attempt<2)await sleep(1200);
+      }
+      if(problem){
+        row.status='review';row.message=problem+'; Update не отправлялся.';
+        log('error',row.message,row);
+      }
+    }finally{
+      state.index=-1;state.phase='idle';state.paused=true;state.running=false;
+      persist();working=false;render();
+    }
+  }
   function shuffle(rows){for(let i=rows.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[rows[i],rows[j]]=[rows[j],rows[i]];}return rows;}
   function sheetRows(){return getXLSX().utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[Number($('sheet').value)]],{header:1,defval:'',raw:false,blankrows:true});}
   async function readFile(file){
@@ -1026,6 +1079,10 @@
     const hasWork=state.rows.some(x=>x.status==='pending'||ACTIVE.has(x.status));
     const isActive=working||!!state.running||poolBusy();
     $('start').disabled=isActive||!hasWork;$('one').disabled=isActive||!hasWork;$('stop').disabled=!isActive;$('pause').disabled=!isActive||halted;
+    const pool=currentPool();
+    const hasUnverified=state.rows.some(r=>r.expected&&r.saveAt&&['saving','verifying','review'].includes(r.status));
+    $('verifyStalled').disabled=working||IS_COURSE_WORKER||!hasUnverified||
+      !!pool?.workers?.some(activeLease)||!!(pool&&Date.now()-pool.createdAt<20000);
     $('start').textContent=state.paused||state.rows.some(x=>ACTIVE.has(x.status))?'▶ Продолжить':'▶ Начать';
     $('retry').disabled=isActive||!state.rows.some(x=>x.status==='error'&&!x.invalid);
     $('load').disabled=isActive;$('reset').disabled=isActive;
@@ -1913,11 +1970,11 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.5.0</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.5.1</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
-      <div class="actions"><button class="primary" id="start">▶ Начать</button><button id="one">Один товар</button><button id="pause">Ⅱ Пауза</button><button class="danger" id="stop">■ Стоп</button><button id="retry">Повторить ошибки</button><button id="report">↓ Отчёт</button></div>
+      <div class="actions"><button class="primary" id="start">▶ Начать</button><button id="one">Один товар</button><button id="verifyStalled">Проверить зависшие (GET)</button><button id="pause">Ⅱ Пауза</button><button class="danger" id="stop">■ Стоп</button><button id="retry">Повторить ошибки</button><button id="report">↓ Отчёт</button></div>
       <nav class="tabs"><button data-tab="queue">Очередь</button><button data-tab="processed">Обработанные</button><button data-tab="import" class="active">Импорт Excel</button><button data-tab="log">Журнал</button><button data-tab="settings">Настройки</button><button data-tab="help">Как работать</button></nav>
       <div class="view hidden" id="queue"><div class="tools"><input type="search" id="search" placeholder="Название, ID или img…"><select id="filter"><option value="all">Все статусы</option><option value="pending">В очереди</option><option value="error">Ошибка</option><option value="skipped">Пропущено</option></select></div><div id="rows"></div></div>
       <div class="view" id="import"><div class="tools"><button class="danger" id="reset">Очистить очередь и историю</button></div><div class="drop" id="drop"><label for="file">Выбрать Excel-файл</label><input id="file" type="file" accept=".xlsx,.xls,.csv" hidden><small>Или перетащите сюда · .xlsx / .xls / .csv</small><small id="filename">Данные Excel обрабатываются локально</small></div>
@@ -1934,7 +1991,9 @@ function initializeDateManager(root, context) {
       <footer class="foot"><span id="updated">Очередь хранится локально</span><button id="prev">←</button><span id="pages" style="flex:none">1 / 1</span><button id="next">→</button></footer></div><div class="body hidden" id="date-content"></div></section>`;
     panel=$('panel');
     const on=(id,ev,fn)=>$(id).addEventListener(ev,fn);
-    on('start','click',()=>launchCourse(false));on('one','click',()=>launchCourse(true));on('pause','click',()=>stopCourseFromPanel(true));on('stop','click',()=>stopCourseFromPanel(false));
+    on('start','click',()=>launchCourse(false));on('one','click',()=>launchCourse(true));
+    on('verifyStalled','click',()=>verifyStalledFromDashboard().catch(ex=>notice(ex.message||String(ex))));
+    on('pause','click',()=>stopCourseFromPanel(true));on('stop','click',()=>stopCourseFromPanel(false));
     on('retry','click',retryErrors);on('report','click',exportReport);on('downloadLog','click',exportLog);on('reset','click',resetAll);
     on('load','click',loadQueue);on('backup','click',()=>download(JSON.stringify(IS_COURSE_WORKER?state:mergedCourseState(),null,2),`${SITE}-woo-products-backup.json`,'application/json'));
     on('file','change',e=>readFile(e.target.files[0]));on('sheet','change',setMapping);
@@ -1975,6 +2034,7 @@ function initializeDateManager(root, context) {
     }
     selectModule(GM_getValue(MODE_KEY,'courses'));
     render();if(state.rows.length)switchTab('queue');
+    if(!IS_COURSE_WORKER)setInterval(()=>{if(!working&&root)render();},3000);
   }
   function captureErrors(){
     const seen=new Map();function record(text){if(!working)return;if(/Video loading failed/i.test(text))return;const at=seen.get(text)||0;if(Date.now()-at<30000)return;seen.set(text,Date.now());log('warn',`Предупреждение страницы: ${text}`,state.rows[state.index]);}
