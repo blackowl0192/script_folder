@@ -1,0 +1,13 @@
+PASS yourcourse.shop: shell, courses, tutors, switch, storage, mutual exclusion, duplicate guard
+PASS yourlibrarium.com: shell, courses, tutors, switch, storage, mutual exclusion, duplicate guard
+PASS learnmarket.net: shell, courses, tutors, switch, storage, mutual exclusion, duplicate guard
+PASS bestseminar.net: shell, courses, tutors, switch, storage, mutual exclusion, duplicate guard
+PASS educationwebs.com: shell, courses, tutors, switch, storage, mutual exclusion, duplicate guard
+PASS easycourses.pro: shell, courses, tutors, switch, storage, mutual exclusion, duplicate guard
+PASS enrollments: controls, layout, start/test/stop, hidden running job, uncertain submission restore, durable success, foreign tab lock
+PASS reload enrollment submitted
+PASS reload enrollment confirmed_success
+PASS courses: JSON restore, settings, queue, start deduplication, navigation ticket, menu continuity
+PASS login page
+PASS unsupported URLs
+ALL TESTS PASSED

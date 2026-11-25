@@ -1,11 +1,11 @@
 // ==UserScript==
-// @name         Product Manager — Trash / Private / Prices
+// @name         steam-site-editor
 // @namespace    https://steambuy.pro/
 // @version      2.6.1
 // @description  WooCommerce Excel: Trash / Private / Price, быстрый режим 1-10 параллельных запросов без загрузки картинок, журнал.
-// @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steambuy_excel_trash_v1_2.user.js
-// @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
-// @downloadURL  https://raw.githubusercontent.com/blackowl0192/script_folder/main/steambuy_excel_trash_v1_2.user.js
+// @homepageURL  https://github.com/blackowl0192/script_folder/blob/main/steam-site-editor.user.js
+// @updateURL    https://raw.githubusercontent.com/blackowl0192/script_folder/main/steam-site-editor.user.js
+// @downloadURL  https://raw.githubusercontent.com/blackowl0192/script_folder/main/steam-site-editor.user.js
 // @match        https://keymplace.com/wp-admin/*
 // @match        https://keymplace.com/wp-login.php*
 // @match        https://playfun.pro/wp-admin/*
