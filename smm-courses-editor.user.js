@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.2.1
+// @version      1.2.2
 // @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
@@ -534,7 +534,7 @@
   async function start(oneOnly=false,automatic=false){
     if(working){notice('Очередь уже выполняется.');return;}
     state=GM_getValue(KEY,empty());
-    if(GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.status==='running'){
+    if(['running'].includes(GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.status) || GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.phase==='saving'){
       log('error','Редактор дат выполняет задачи на этом сайте. Одновременные изменения заблокированы.');
       return;
     }
@@ -727,7 +727,7 @@
   function launchCourse(oneOnly){
     if(working){notice('Редактор курсов уже выполняет задачу.');return;}
     const fresh=GM_getValue(KEY,empty());
-    if(GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.status==='running'){
+    if(['running'].includes(GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.status) || GM_getValue('bwo.smm.dates.v2.'+SITE,null)?.phase==='saving'){
       notice('Редактор дат выполняет обновления на этом сайте. Сначала поставьте его на паузу.');return;
     }
     const lease=GM_getValue(LEASE,null);
@@ -1359,12 +1359,16 @@ function initializeDateManager(root, context) {
     } finally { busy = false; draw(); }
   }
   function start(limit = null) {
-    if (window.__SMM_RANDOM_DATES__) {
+    if (unsafeWindow.__SMM_RANDOM_DATES__ || window.__SMM_RANDOM_DATES__) {
       log('Обнаружен старый отдельный smmmaster_random_dates.user.js. Отключите его в Tampermonkey, чтобы избежать двойной обработки.', 'error');
       return;
     }
-    const courseState = GM_getValue('bwo.wc.course.product.v1.'+SITE, null);
-    if (courseState?.running) { log('Редактор курсов сейчас выполняет обновления на этом сайте. Дождитесь завершения.', 'error'); return; }
+    const courseKey = 'bwo.wc.course.product.v1.' + SITE;
+    const courseState = GM_getValue(courseKey, null);
+    const courseLease = GM_getValue(courseKey + '.lease', null);
+    if (courseState?.running || (courseLease && courseLease.expires > Date.now())) {
+      log('Редактор курсов сейчас выполняет обновления на этом сайте. Дождитесь завершения.', 'error'); return;
+    }
     if (!state.ids.length) { log('Сначала загрузите список ID', 'error'); return; }
     if (state.index >= state.ids.length) { log('Все ID обработаны. Сбросьте или загрузите новый список.'); return; }
     if (!dateRange()) { log('Укажите корректный диапазон дат: дата «От» не позже даты «До».', 'error'); return; }
@@ -1505,7 +1509,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>Редактор курсов для SMM курсов</b><small>${esc(SITE)} · v1.2.1</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>Редактор курсов для SMM курсов</b><small>${esc(SITE)} · v1.2.2</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
