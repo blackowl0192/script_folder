@@ -510,6 +510,89 @@
       price:one('#_regular_price').value,lessons:lessonsField().value,
       downloadable:readDownloadable(),image:imagePreview(),attachmentId:thumbnailID()};
   }
+
+  // Read-only verification from WordPress HTML, without reloading the worker tab
+  // or submitting a second Update. All fields must be present before marking done.
+  async function fetchSavedSnapshot(row){
+    const requested=new URL(productURL(row.id));
+    const response=await fetch(requested.href,{
+      method:'GET',credentials:'same-origin',redirect:'follow',cache:'no-store',
+      signal:AbortSignal.timeout(45000)
+    });
+    const target=new URL(response.url||requested.href,ORIGIN);
+    if(target.protocol!=='https:'||target.hostname.replace(/^www\./,'')!==SITE)
+      throw error('Проверка перенаправлена на другой сайт. Товар не подтверждён.');
+    if(!response.ok||/\/wp-login\.php$/.test(target.pathname))
+      throw error('Не получена страница товара: HTTP '+response.status+'.');
+    const doc=new DOMParser().parseFromString(await response.text(),'text/html');
+    if(doc.querySelector('#loginform'))throw error('Для проверки требуется заново войти в WordPress.');
+    const form=doc.querySelector('form#post');
+    if(!form)throw error('WordPress не вернул форму редактирования товара.');
+    const formId=String(form.querySelector('[name="post_ID"]')?.value||'').trim();
+    if(formId!==row.id)throw error('В ответе другой товар: '+formId+' вместо '+row.id+'.');
+    const required=(selector,label)=>{
+      const input=form.querySelector(selector)||doc.querySelector(selector);
+      if(!input)throw error('В ответе отсутствует поле '+label+'; не могу подтвердить сохранение.');
+      return input;
+    };
+    const slugValues=[
+      form.querySelector('#post_name')?.value?.trim(),
+      doc.querySelector('#editable-post-name-full')?.textContent?.trim(),
+      doc.querySelector('#new-post-slug')?.value?.trim(),
+      doc.querySelector('#editable-post-name')?.textContent?.trim()
+    ];
+    const slug=slugValues.find(x=>x&&!/[\u2026]|\.\.\./.test(x))||'';
+    if(!slug)throw error('WordPress не вернул полный slug для проверки.');
+    const lessons=form.querySelector('#acf-field_6502c6f7841f9') ||
+      form.querySelector('input[name="acf[field_6502c6f7841f9]"]') ||
+      form.querySelector('.acf-field[data-name="lessons"] input[type="number"],.acf-field[data-name="lessons"] input[type="text"]');
+    if(!lessons)throw error('WordPress не вернул поле ACF lessons.');
+    const imageBlock=doc.querySelector('#postimagediv');
+    const image=imageBlock?.querySelector('#set-post-thumbnail img[src],img[src]')?.getAttribute('src')||'';
+    const thumbnail=form.querySelector('input#_thumbnail_id,input[name="_thumbnail_id"]')||
+      doc.querySelector('input#_thumbnail_id,input[name="_thumbnail_id"]');
+    const attachmentId=String(thumbnail?.value||'').trim();
+    if(row.expected?.img&&!attachmentId&&!image)
+      throw error('Не удалось прочитать обложку из сохранённой страницы.');
+    const actual={
+      name:required('input#title[name="post_title"]','Name').value,
+      slug,
+      description:required('textarea#content[name="content"]','Description').value,
+      price:required('#_regular_price','Regular price').value,
+      lessons:lessons.value,
+      downloadable:!!form.querySelector('#_downloadable')?.checked,
+      image,attachmentId
+    };
+    log('info','Свежая страница товара получена: HTTP '+response.status+
+      ', ID '+row.id+', attachment '+(attachmentId||'по изображению')+'.',row);
+    return actual;
+  }
+  async function verifySavedRow(row){
+    if(!row.expected||!row.saveAt)
+      throw error('Нет данных прежнего Update. Повторное сохранение запрещено.');
+    stage(row,'verifying','Сверяю сохранённый товар через GET WordPress, без перезагрузки и без Update.');
+    let lastError='';
+    for(let attempt=1;attempt<=2;attempt++){
+      guard(true);
+      try{
+        const actual=await fetchSavedSnapshot(row);
+        row.actual=actual;row.checked=new Date().toISOString();persist();
+        const diff=differences(actual,row.expected);
+        if(!diff.length){
+          row.status='done';row.message='Все поля подтверждены с сервера после Update';
+          log('ok',row.message,row);
+          return true;
+        }
+        lastError='Несовпадения после Update: '+diff.join(', ');
+      }catch(ex){lastError=ex.message||String(ex);}
+      log('warn','Проверка '+attempt+'/2: '+lastError,row);
+      if(attempt<2)await sleep(1200);
+    }
+    row.status='review';row.message=lastError+'; повторный Update не выполнялся.';
+    log('error',row.message,row);
+    pauseOtherCourseWorkers();
+    return false;
+  }
   function differences(actual,expected){
     const diff=[];
     if(actual.name!==expected.name)diff.push('Name');
