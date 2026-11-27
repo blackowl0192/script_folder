@@ -2255,9 +2255,13 @@ function initializeDateManager(root, context) {
     function setUpdateFields(fields){
       if(!editable()){render();return;}
       try{
-        for(const row of state.rows){
-          if(row.invalid||!['pending','opening','filling'].includes(row.status))continue;
-          validateRowForFields(row,fields);
+        // An empty selection is allowed temporarily so "Обновить всё" can be
+        // unchecked before choosing a single field; Start and Import remain blocked.
+        if(FIELD_KEYS.some(k=>fields[k])){
+          for(const row of state.rows){
+            if(row.invalid||!['pending','opening','filling'].includes(row.status))continue;
+            validateRowForFields(row,fields);
+          }
         }
         state.settings.fields={...fields};
         persist();render();
