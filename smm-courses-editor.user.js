@@ -575,36 +575,47 @@
       if(!input)throw error('В ответе отсутствует поле '+label+'; не могу подтвердить сохранение.');
       return input;
     };
-    const slugValues=[
-      form.querySelector('#post_name')?.value?.trim(),
-      doc.querySelector('#editable-post-name-full')?.textContent?.trim(),
-      doc.querySelector('#new-post-slug')?.value?.trim(),
-      doc.querySelector('#editable-post-name')?.textContent?.trim()
-    ];
-    const slug=slugValues.find(x=>x&&!/[\u2026]|\.\.\./.test(x))||'';
-    if(!slug)throw error('WordPress не вернул полный slug для проверки.');
-    const lessons=form.querySelector('#acf-field_6502c6f7841f9') ||
-      form.querySelector('input[name="acf[field_6502c6f7841f9]"]') ||
-      form.querySelector('.acf-field[data-name="lessons"] input[type="number"],.acf-field[data-name="lessons"] input[type="text"]');
-    if(!lessons)throw error('WordPress не вернул поле ACF lessons.');
-    const imageBlock=doc.querySelector('#postimagediv');
-    const image=imageBlock?.querySelector('#set-post-thumbnail img[src],img[src]')?.getAttribute('src')||'';
-    const thumbnail=form.querySelector('input#_thumbnail_id,input[name="_thumbnail_id"]')||
-      doc.querySelector('input#_thumbnail_id,input[name="_thumbnail_id"]');
-    const attachmentId=String(thumbnail?.value||'').trim();
-    if(row.expected?.img&&!attachmentId&&!image)
-      throw error('Не удалось прочитать обложку из сохранённой страницы.');
-    const actual={
-      name:required('input#title[name="post_title"]','Name').value,
-      slug,
-      description:required('textarea#content[name="content"]','Description').value,
-      price:required('#_regular_price','Regular price').value,
-      lessons:lessons.value,
-      downloadable:!!form.querySelector('#_downloadable')?.checked,
-      image,attachmentId
-    };
-    log('info','Свежая страница товара получена: HTTP '+response.status+
-      ', ID '+row.id+', attachment '+(attachmentId||'по изображению')+'.',row);
+    const expected=row.expected||{};
+    const actual={};
+    if(Object.hasOwn(expected,'name'))
+      actual.name=required('input#title[name="post_title"]','Name').value;
+    if(Object.hasOwn(expected,'slug')){
+      const slugValues=[
+        form.querySelector('#post_name')?.value?.trim(),
+        doc.querySelector('#editable-post-name-full')?.textContent?.trim(),
+        doc.querySelector('#new-post-slug')?.value?.trim(),
+        doc.querySelector('#editable-post-name')?.textContent?.trim()
+      ];
+      actual.slug=slugValues.find(x=>x&&!/[\u2026]|\.\.\./.test(x))||'';
+      if(!actual.slug)throw error('WordPress не вернул полный slug для проверки.');
+    }
+    if(Object.hasOwn(expected,'description'))
+      actual.description=required('textarea#content[name="content"]','Description').value;
+    if(Object.hasOwn(expected,'price'))
+      actual.price=required('#_regular_price','Regular price').value;
+    if(Object.hasOwn(expected,'lessons')){
+      const lessons=form.querySelector('#acf-field_6502c6f7841f9')||
+        form.querySelector('input[name="acf[field_6502c6f7841f9]"]')||
+        form.querySelector('.acf-field[data-name="lessons"] input[type="number"],.acf-field[data-name="lessons"] input[type="text"]');
+      if(!lessons)throw error('WordPress не вернул поле ACF lessons.');
+      actual.lessons=lessons.value;
+    }
+    if(Object.hasOwn(expected,'downloadable')){
+      const checkbox=form.querySelector('#_downloadable');
+      if(!checkbox)throw error('WordPress не вернул флажок Downloadable.');
+      actual.downloadable=!!checkbox.checked;
+    }
+    if(Object.hasOwn(expected,'img')){
+      const imageBlock=doc.querySelector('#postimagediv');
+      actual.image=imageBlock?.querySelector('#set-post-thumbnail img[src],img[src]')?.getAttribute('src')||'';
+      const thumbnail=form.querySelector('input#_thumbnail_id,input[name="_thumbnail_id"]')||
+        doc.querySelector('input#_thumbnail_id,input[name="_thumbnail_id"]');
+      actual.attachmentId=String(thumbnail?.value||'').trim();
+      if(!actual.attachmentId&&!actual.image)
+        throw error('Не удалось прочитать обложку из сохранённой страницы.');
+    }
+    log('info','Свежая страница товара получена: HTTP '+response.status+', ID '+row.id+
+      ', проверяемые поля: '+Object.keys(expected).join(', ')+'.',row);
     return actual;
   }
   async function verifySavedRow(row){
@@ -635,9 +646,9 @@
   }
   function differences(actual,expected){
     const diff=[];
-    if(actual.name!==expected.name)diff.push('Name');
-    if(actual.slug!==expected.slug)diff.push('slug');
-    if(richSignature(actual.description)!==richSignature(expected.description)){
+    if(Object.hasOwn(expected,'name')&&actual.name!==expected.name)diff.push('Name');
+    if(Object.hasOwn(expected,'slug')&&actual.slug!==expected.slug)diff.push('slug');
+    if(Object.hasOwn(expected,'description')&&richSignature(actual.description)!==richSignature(expected.description)){
       const normalizedText=h=>new DOMParser().parseFromString(String(h??''),'text/html').body.textContent.replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim();
       if(normalizedText(actual.description)!==normalizedText(expected.description))diff.push('Description / HTML');
       else{
@@ -646,9 +657,9 @@
         if(tags(actual.description)!==tags(expected.description))diff.push('Description structure');
       }
     }
-    try{if(normalizePrice(actual.price)!==normalizePrice(expected.price))diff.push('Regular price');}catch{diff.push('Regular price');}
-    if(String(Number(actual.lessons))!==String(Number(expected.lessons)))diff.push('lessons');
-    if(actual.downloadable)diff.push('Downloadable');
+    if(Object.hasOwn(expected,'price')){try{if(normalizePrice(actual.price)!==normalizePrice(expected.price))diff.push('Regular price');}catch{diff.push('Regular price');}}
+    if(Object.hasOwn(expected,'lessons')&&String(Number(actual.lessons))!==String(Number(expected.lessons)))diff.push('lessons');
+    if(Object.hasOwn(expected,'downloadable')&&actual.downloadable!==expected.downloadable)diff.push('Downloadable');
     if(expected.img){
       const exactPreview=imageMatches(actual.image,expected.img);
       const idMatch=!!(expected.attachmentId&&actual.attachmentId===expected.attachmentId);
