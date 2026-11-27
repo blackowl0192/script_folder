@@ -744,8 +744,9 @@
       throw error('POST form содержит неожиданный action (ожидалось editpost). Сохранение запрещено.');
     if(!String(payload.get('_wpnonce')||''))
       throw error('В форме отсутствует nonce WordPress. Сохранение запрещено.');
-    if(payload.get('post_title')!==row.name)
-      throw error('Перед POST форма изменила название. Сохранение запрещено.');
+    const expectedTitle=Object.hasOwn(row.expected||{},'name')?row.name:row.before?.name;
+    if(payload.get('post_title')!==expectedTitle)
+      throw error('Перед POST форма изменила название товара. Сохранение запрещено.');
     const methodName=button.name||'(без имени)';
     log('info','Подготовлен WordPress POST: action=editpost, post_ID='+row.id+', кнопка '+methodName+'. Отправляю один запрос.',row);
     const started=Date.now();
@@ -832,57 +833,89 @@
             stage(r,'opening','Открываем товар WooCommerce');
             nav(r.url,'open');return;
           }
-          await editorReady(false);
-          stage(r,'filling','Считываем товар, заполняем данные');
-          r.before=await snapshot();persist();
-          await fill('input#title[name="post_title"]',r.name);
-          await writeSlug(r.slug);
-          await fill('#_regular_price',wooPriceForInput(r.price));
-          log('info','Regular price заполнена в формате сайта: '+wooPriceForInput(r.price),r);
-          const l=lessonsField();if(l.disabled||l.readOnly)throw error('ACF lessons заблокировано.');
-          guard();l.focus();nativeValue(l,r.lessons);await sleep(150);
-          if(String(Number(lessonsField().value))!==r.lessons)throw error('ACF lessons не приняло новое значение.');
-          await disableDownloadable();
-          const selected=await writeImage(r.img,r);
-          // Description is written last to avoid WooCommerce/ACF rerenders resetting TinyMCE.
-          const normalized=await writeDescription(r.description);
+          const fields=validateFieldSelection(selectedFields(state.settings));
+          validateRowForFields(r,fields);
+          await editorReady(fields,false);
+          stage(r,'filling','Считываем товар. Обновляем только: '+
+            selectedFieldKeys(state.settings).map(k=>FIELD_LABELS[k]).join(', '));
+          r.before=await snapshot(fields);persist();
+          if(fields.name)await fill('input#title[name="post_title"]',r.name);
+          if(fields.slug)await writeSlug(r.slug);
+          if(fields.price){
+            await fill('#_regular_price',wooPriceForInput(r.price));
+            log('info','Regular price заполнена: '+wooPriceForInput(r.price),r);
+          }
+          if(fields.lessons){
+            const field=lessonsField();
+            if(field.disabled||field.readOnly)throw error('ACF lessons заблокировано.');
+            guard();field.focus();nativeValue(field,r.lessons);await sleep(150);
+            if(String(Number(lessonsField().value))!==r.lessons)
+              throw error('ACF lessons не приняло новое значение.');
+          }
+          if(fields.downloadable)await disableDownloadable();
+          const selectedImage=fields.img?await writeImage(r.img,r):null;
+          // HTML editor and Media Library are not touched unless selected.
+          const normalized=fields.description?await writeDescription(r.description):null;
           guard();
-          const ed=tiny();if(ed?.initialized&&!ed.isHidden())ed.save();
-          r.expected={name:r.name,slug:r.slug,description:normalized,price:r.price,lessons:r.lessons,downloadable:false,img:r.img,attachmentId:selected.attachmentId};
-          const beforeSave=await snapshot();
+          const ed=fields.description?tiny():null;
+          if(ed?.initialized&&!ed.isHidden())ed.save();
+          r.expected={};
+          if(fields.name)r.expected.name=r.name;
+          if(fields.slug)r.expected.slug=r.slug;
+          if(fields.description)r.expected.description=normalized;
+          if(fields.price)r.expected.price=r.price;
+          if(fields.lessons)r.expected.lessons=r.lessons;
+          if(fields.downloadable)r.expected.downloadable=false;
+          if(fields.img){
+            r.expected.img=r.img;
+            r.expected.attachmentId=selectedImage.attachmentId;
+          }
+          const beforeSave=await snapshot(fields);
           const mismatch=differences(beforeSave,r.expected);
-          if(mismatch.length)throw error('Поля не прошли проверку перед Update: '+mismatch.join(', ')+'.');
-          const button=one('#publish');if(button.disabled)throw error('Update недоступна.');
+          if(mismatch.length)
+            throw error('Выбранные поля не прошли проверку перед Update: '+mismatch.join(', ')+'.');
+          const button=one('#publish');
+          if(button.disabled)throw error('Update недоступна.');
           const form=button.form||document.querySelector('form#post');
           if(!form)throw error('Форма WordPress #post не найдена.');
           if(!form.contains(button))throw error('Кнопка Update не принадлежит форме товара.');
-          // Explicitly synchronize the final Visual content with the submitted textarea.
-          // TinyMCE can serialize the same markup differently when Text/Visual is toggled.
-          // WordPress submits textarea#content, not the visible iframe document.
-          const contentField=form.querySelector('textarea#content[name="content"]');
-          if(!contentField||contentField.disabled)throw error('POST form не содержит доступное поле Description #content. Update не выполнен.');
-          if(!ed?.initialized||ed.isHidden())throw error('Visual недоступен перед Update. Сохранение остановлено.');
-          const visualHTML=ed.getContent();
-          if(!visualHTML.trim())throw error('Visual не содержит Description перед Update.');
-          if(richSignature(visualHTML)!==richSignature(normalized))
-            throw error('Visual изменил Description после проверки заполнения. Update не выполнен.');
-          ed.save();
-          if(contentField.value!==visualHTML){
-            // Set only the POST field, without triggering a second TinyMCE re-render.
-            const setter=Object.getOwnPropertyDescriptor(unsafeWindow.HTMLTextAreaElement.prototype,'value').set;
-            setter.call(contentField,visualHTML);
-            log('info','Description синхронизировано: содержимое Visual перенесено в POST textarea.',r);
+          let visualHTML=null;
+          if(fields.description){
+            // Only when Description is selected: synchronize final Visual HTML with POST textarea.
+            const contentField=form.querySelector('textarea#content[name="content"]');
+            if(!contentField||contentField.disabled)
+              throw error('POST form не содержит поле Description #content.');
+            if(!ed?.initialized||ed.isHidden())
+              throw error('Visual недоступен перед Update.');
+            visualHTML=ed.getContent();
+            if(!visualHTML.trim()||richSignature(visualHTML)!==richSignature(normalized))
+              throw error('Visual изменил Description после проверки заполнения.');
+            ed.save();
+            if(contentField.value!==visualHTML){
+              const setter=Object.getOwnPropertyDescriptor(unsafeWindow.HTMLTextAreaElement.prototype,'value').set;
+              setter.call(contentField,visualHTML);
+              log('info','Description синхронизировано с POST textarea.',r);
+            }
           }
           await sleep(200);guard();
           const body=new FormData(form);
-          if(body.get('post_title')!==r.name)throw error('POST form потеряла название. Update не выполнен.');
-          if(body.getAll('content').length!==1)throw error('POST form должна содержать ровно одно поле Description. Update не выполнен.');
-          if(String(body.get('content')??'')!==visualHTML)
-            throw error('POST form не удерживает Description после синхронизации с Visual. Update не выполнен.');
-          const fieldName=lessonsField().name;
-          if(!fieldName||String(body.get(fieldName))!==r.lessons)throw error('POST form потеряла lessons. Update не выполнен.');
-          if(body.has('_downloadable'))throw error('POST form всё ещё содержит Downloadable. Update не выполнен.');
-          if(String(body.get('_regular_price')||'')!==wooPriceForInput(r.price))throw error('POST form содержит неправильную Regular price (ожидалась десятичная запятая). Update не выполнен.');
+          const originalTitle=fields.name?r.name:r.before.name;
+          if(body.get('post_title')!==originalTitle)
+            throw error('POST form изменила название, хотя оно не выбрано, либо потеряла новое название.');
+          if(fields.description){
+            if(body.getAll('content').length!==1 ||
+                String(body.get('content')??'')!==visualHTML)
+              throw error('POST form потеряла выбранное описание.');
+          }
+          if(fields.lessons){
+            const fieldName=lessonsField().name;
+            if(!fieldName||String(body.get(fieldName))!==r.lessons)
+              throw error('POST form потеряла выбранное поле lessons.');
+          }
+          if(fields.downloadable&&body.has('_downloadable'))
+            throw error('POST form всё ещё содержит Downloadable.');
+          if(fields.price && String(body.get('_regular_price')||'')!==wooPriceForInput(r.price))
+            throw error('POST form содержит неправильную Regular price.');
           // Write a pre-POST checkpoint before any network operation. A crash/timeout
           // leaves the row in saving, where only verification is allowed.
           stage(r,'saving','Сохраняем через контролируемый POST WordPress, затем проверяем на новой странице');
