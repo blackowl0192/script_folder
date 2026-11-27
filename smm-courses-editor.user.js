@@ -1139,7 +1139,8 @@
       ws.length?('Рабочие вкладки: '+ws.filter(x=>x.live).length+'/'+ws.length+' · '+ws.map(x=>'№'+x.id+': '+x.done+'/'+x.total+(x.live?' работает':'')).join(' · ')):
       (working||state.running)?(halted?'Остановка после текущей операции':`${STATUSES[current?.status]||'Работа'} · ${current?.name||current?.id||''}`):
       state.paused?'На паузе — нажмите Продолжить':state.rows.length?`${state.filename} · ${SITE}`:'Загрузите Excel с товарами';
-    const hasWork=state.rows.some(x=>x.status==='pending'||ACTIVE.has(x.status));
+    const hasWork=state.rows.some(x=>x.status==='pending'||ACTIVE.has(x.status)) &&
+      selectedFieldKeys().length>0;
     const isActive=working||!!state.running||(poolBusy()&&!canRestartAfterStop);
     $('start').disabled=isActive||!hasWork;$('one').disabled=isActive||!hasWork;
     $('stop').disabled=!isActive;$('pause').disabled=!isActive||halted;
@@ -1163,7 +1164,8 @@
       const control=$('field-'+key);control.checked=!!fields[key];control.disabled=isActive;
     }
     $('selectedFieldsSummary').textContent=allChosen?'Режим: обновить все поля':
-      'Выбрано: '+selectedFieldKeys().map(k=>FIELD_LABELS[k]).join(', ');
+      selectedFieldKeys().length?'Выбрано: '+selectedFieldKeys().map(k=>FIELD_LABELS[k]).join(', '):
+      'Ничего не выбрано. Отметьте хотя бы одно поле перед запуском.';
     $('updated').textContent=state.updated?`Сохранено ${new Date(state.updated).toLocaleTimeString()} · ${SITE}`:`Очередь хранится отдельно для ${SITE}`;
     root.querySelector('[data-tab="processed"]').textContent=`Обработанные (${count(['done','review'])})`;
     if(['queue','processed'].includes(tab))renderRows();if(tab==='log')renderLog();
@@ -1194,6 +1196,7 @@
   function launchCourse(oneOnly){
     if(working || IS_COURSE_WORKER){notice('Запустите очередь из основной панели.');return;}
     const dates=GM_getValue('bwo.smm.dates.v2.'+SITE,null);
+    try{validateFieldSelection(selectedFields());}catch(ex){notice(ex.message);return;}
     if(dates?.status==='running'||dates?.phase==='saving'){notice('Редактор дат работает на этом сайте. Сначала остановите его.');return;}
     const oldPool=currentPool();
     const stoppedPool=!!oldPool && emergencyStopFor(oldPool.run);
@@ -2160,7 +2163,6 @@ function initializeDateManager(root, context) {
     function setUpdateFields(fields){
       if(!editable()){render();return;}
       try{
-        validateFieldSelection(fields);
         for(const row of state.rows){
           if(row.invalid||!['pending','opening','filling'].includes(row.status))continue;
           validateRowForFields(row,fields);
