@@ -1014,12 +1014,11 @@
   }
   function validateRowForFields(row,fields){
     validateFieldSelection(fields);
-    if(!/^[1-9]\\d*$/.test(String(row.id||'')))throw error('ID должен быть числовым WordPress post ID.');
+    if(!/^[1-9]\d*$/.test(String(row.id||'')))throw error('ID должен быть числовым WordPress post ID.');
     if(fields.name && !String(row.name||'').trim())throw error('Для изменения названия нужна колонка Name.');
     if(fields.slug && (!String(row.slug||'').trim()||String(row.slug).length>180))
       throw error('Для изменения slug нужна колонка Name с корректным названием.');
-    if(fields.description && !String(row.description||'').trim())
-      throw error('Для изменения описания нужна непустая колонка Description.');
+    if(fields.description)validateHTML(row.description);
     if(fields.price)normalizePrice(row.price);
     if(fields.lessons)normalizeLessons(row.lessons);
     if(fields.img)normalizeImg(row.img);
@@ -1050,9 +1049,9 @@
           name:from(line,'name').trim(),description:from(line,'description'),
           rawPrice:from(line,'price'),rawLessons:from(line,'lessons'),
           rawImg:from(line,'img').trim(),status:'pending',message:''};
-        r.url=/^[1-9]\\d*$/.test(r.id)?productURL(r.id):'';
+        r.url=/^[1-9]\d*$/.test(r.id)?productURL(r.id):'';
         try{
-          if(!/^[1-9]\\d*$/.test(r.id))throw error('ID должен быть числовым WordPress post ID.');
+          if(!/^[1-9]\d*$/.test(r.id))throw error('ID должен быть числовым WordPress post ID.');
           if(seen.has(r.id))throw error('Повторный ID товара в Excel.');
           seen.add(r.id);
           if(fields.name||fields.slug){if(!r.name)throw error('Name не заполнено.');}
