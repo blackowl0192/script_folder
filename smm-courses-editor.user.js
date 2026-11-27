@@ -140,13 +140,26 @@
   const ALIAS = {id:['id','postid','productid'],name:['name','title','productname'],description:['description','content','info'],price:['regularprice','price'],lessons:['lessons','lesson'],img:['img','image','photo']};
   const STATUSES = {pending:'В очереди',opening:'Открывается',filling:'Заполняется',saving:'Сохраняется',verifying:'Проверяется',done:'Выполнено',review:'Проверить',error:'Ошибка',skipped:'Пропущено'};
   const ACTIVE = new Set(['opening','filling','saving','verifying']);
+  const FIELD_KEYS=['name','slug','description','price','lessons','downloadable','img'];
+  const FIELD_LABELS={name:'Название',slug:'URL / slug',description:'Описание',price:'Regular price',lessons:'Количество уроков (ACF)',downloadable:'Отключить Downloadable',img:'Обложка'};
+  const allFields=()=>Object.fromEntries(FIELD_KEYS.map(k=>[k,true]));
+  function selectedFields(settings=state.settings){
+    const src=settings?.fields;
+    return src && typeof src==='object' ?
+      Object.fromEntries(FIELD_KEYS.map(k=>[k,src[k]===undefined?true:!!src[k]])) : allFields();
+  }
+  function selectedFieldKeys(settings){return FIELD_KEYS.filter(k=>selectedFields(settings)[k]);}
+  function validateFieldSelection(fields){
+    if(!FIELD_KEYS.some(k=>fields[k]))throw error('Выберите минимум одно поле для обновления.');
+    return fields;
+  }
   const sleep = ms => new Promise(resolve=>setTimeout(resolve,ms));
   const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
   const DOC = uid();
   const error = (message,fatal=false) => Object.assign(new Error(message),{fatal});
   const STOP = Symbol('stopped');
   const esc = value => String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const empty = () => ({version:1,rows:[],logs:[],filename:'',run:'',index:-1,phase:'idle',running:false,paused:false,owner:'',single:false,stopAfterVerify:false,settings:{delay:3,stopOnError:true,workers:1},updated:''});
+  const empty = () => ({version:1,rows:[],logs:[],filename:'',run:'',index:-1,phase:'idle',running:false,paused:false,owner:'',single:false,stopAfterVerify:false,settings:{delay:3,stopOnError:true,workers:1,fields:allFields()},updated:''});
   let state = GM_getValue(KEY,null)||empty();
 
   // Every worker has an independent state key; the dashboard only merges read-only snapshots.
