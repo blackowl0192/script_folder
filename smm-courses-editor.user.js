@@ -524,20 +524,31 @@
     if(el.checked){el.click();await sleep(220);guard();}
     if(el.checked)throw error('Не удалось снять флажок Downloadable.');
   }
-  async function editorReady(allowStopped=false){
+  async function editorReady(fields,allowStopped=false){
     await waitFor(()=>one('input#title[name="post_title"]',document,false)
-      &&one('#content-html',document,false)
-      &&one('#_regular_price',document,false)
-      &&one('#_downloadable',document,false)
       &&one('#publish',document,false)
-      &&(()=>{try{return !!lessonsField();}catch{return false;}})(),
-      'поля WooCommerce и ACF',50000,allowStopped);
-    await sleep(400);guard(allowStopped);
+      &&(!fields.slug||!!document.querySelector('#post_name,#editable-post-name-full,#edit-slug-buttons'))
+      &&(!fields.description||!!one('#content-html',document,false))
+      &&(!fields.price||!!one('#_regular_price',document,false))
+      &&(!fields.downloadable||!!one('#_downloadable',document,false))
+      &&(!fields.lessons||(()=>{try{return !!lessonsField();}catch{return false;}})())
+      &&(!fields.img||!!document.querySelector('#postimagediv')),
+      'поля WordPress, выбранные для обновления',50000,allowStopped);
+    await sleep(250);guard(allowStopped);
   }
-  async function snapshot(allowStopped=false){
-    return {name:one('input#title[name="post_title"]').value,slug:readSlug(),description:await readDescription(allowStopped),
-      price:one('#_regular_price').value,lessons:lessonsField().value,
-      downloadable:readDownloadable(),image:imagePreview(),attachmentId:thumbnailID()};
+  async function snapshot(fields,allowStopped=false){
+    // The WordPress form always sends post_title; preserve its original value
+    // when updating another field such as price or description.
+    const actual={name:one('input#title[name="post_title"]').value};
+    if(fields.slug)actual.slug=readSlug();
+    if(fields.description)actual.description=await readDescription(allowStopped);
+    if(fields.price)actual.price=one('#_regular_price').value;
+    if(fields.lessons)actual.lessons=lessonsField().value;
+    if(fields.downloadable)actual.downloadable=readDownloadable();
+    if(fields.img){
+      actual.image=imagePreview();actual.attachmentId=thumbnailID();
+    }
+    return actual;
   }
 
   // Read-only verification from WordPress HTML, without reloading the worker tab
