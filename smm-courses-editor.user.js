@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Редактор курсов для SMM курсов
 // @namespace    blackowl0192.woocommerce.course.products
-// @version      1.6.0
-// @description  Единый менеджер WooCommerce: массовое редактирование курсов из Excel (название, описание, цена, уроки, обложка) и дат публикации по ID. Очереди, отдельная панель управления, проверка, журнал и отчёты.
+// @version      1.7.0
+// @description  Редактор WooCommerce: из Excel обновляет все поля либо выборочно Name, slug, Description, Regular price, lessons, Downloadable и обложку. Редактор дат, 1–5 потоков, проверка сохранения, аварийный стоп, журнал и отчёты.
 // @match        https://smmmaster.net/wp-admin/*
 // @match        https://smmmaster.net/wp-login.php*
 // @match        https://www.smmmaster.net/wp-admin/*
@@ -42,7 +42,10 @@
  * Excel ID is the WooCommerce product post ID, img is the 14-digit MEDIA FILE NAME,
  * NOT the internal WordPress attachment ID. Images must already be in Media Library.
  * Queue is shuffled once on import. Original Excel row numbers stay in all reports.
- * No Update is submitted unless field checks pass; saved data is re-read on a fresh page.
+ * Select all fields or individual Name, slug, Description, Regular price,
+ * ACF lessons, Downloadable and product image. Unselected editors are skipped.
+ * No Update is submitted unless selected field checks pass; saved data is
+ * verified via a separate read-only GET request.
  * Use one dashboard tab plus 1–5 fixed named worker tabs; each worker
  * navigates through its own assigned products in that same tab.
  * Emergency stop is persisted in Tampermonkey storage per site and run.
@@ -51,7 +54,7 @@
 
 (() => {
   'use strict';
-  const SCRIPT_VERSION='1.6.0';
+  const SCRIPT_VERSION='1.7.0';
   const HOSTS = new Set(['smmmaster.net', 'hottestcourse.com', 'learnmarket.net', 'profcourse.com', 'bestsocials.online']);
   const SITE = location.hostname.replace(/^www\./, '');
   if (location.protocol !== 'https:' || !HOSTS.has(SITE)) return;
@@ -2211,7 +2214,7 @@ function initializeDateManager(root, context) {
     root=host.attachShadow({mode:'open'});
     root.innerHTML=`<style>${css}:host>section,:host>button{pointer-events:auto}</style>
       <button class="pill hidden" id="pill">SMM · открыть менеджер</button>
-      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.6.0</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
+      <section class="panel" id="panel"><header class="head" id="drag"><div class="logo">W</div><div><b>SMM Course Manager · Курсы и даты</b><small>${esc(SITE)} · v1.7.0</small></div><span class="space"></span><button id="dashboard" title="Открыть отдельную вкладку">↗ Отдельная вкладка</button><button id="full" title="На весь экран">⛶</button><button id="min" title="Свернуть">—</button></header>
       <nav class="module-nav"><div id="module-buttons" class="module-actions"></div><span class="spacer"></span><span class="hint">${esc(SITE)}</span></nav>
       <div class="body" id="course-content"><div class="stats"><div class="stat"><b id="total">0</b><small>Всего товаров</small></div><div class="stat success"><b id="done">0</b><small>Готово</small></div><div class="stat"><b id="pending">0</b><small>В очереди / работе</small></div><div class="stat bad"><b id="failed">0</b><small>Ошибки / проверка</small></div></div>
       <div class="progress"><i id="bar"></i></div><div class="current" id="current">Загрузите Excel с товарами</div>
