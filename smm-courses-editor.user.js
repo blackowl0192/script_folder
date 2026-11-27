@@ -1155,6 +1155,15 @@
     $('delay').disabled=isActive;$('stopOnError').disabled=isActive;$('workers').disabled=isActive;
     $('delay').value=state.settings.delay;$('stopOnError').checked=!!state.settings.stopOnError;
     $('workers').value=Math.max(1,Math.min(5,Number(state.settings.workers)||1));
+    const fields=selectedFields();
+    const allChosen=FIELD_KEYS.every(k=>fields[k]);
+    $('fieldAll').checked=allChosen;
+    $('fieldAll').disabled=isActive;
+    for(const key of FIELD_KEYS){
+      const control=$('field-'+key);control.checked=!!fields[key];control.disabled=isActive;
+    }
+    $('selectedFieldsSummary').textContent=allChosen?'Режим: обновить все поля':
+      'Выбрано: '+selectedFieldKeys().map(k=>FIELD_LABELS[k]).join(', ');
     $('updated').textContent=state.updated?`Сохранено ${new Date(state.updated).toLocaleTimeString()} · ${SITE}`:`Очередь хранится отдельно для ${SITE}`;
     root.querySelector('[data-tab="processed"]').textContent=`Обработанные (${count(['done','review'])})`;
     if(['queue','processed'].includes(tab))renderRows();if(tab==='log')renderLog();
@@ -1312,6 +1321,10 @@
   }
 
   const css=`
+    .field-picker{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px;padding:9px 0}
+    .field-picker label{display:flex;gap:7px;align-items:center;background:#f7f9fd;padding:9px;border:1px solid #e0e7f0;border-radius:8px}
+    .field-picker input[type=checkbox]{flex:none}
+    .field-picker .all-fields{grid-column:1/-1;background:#eaf1ff;font-weight:700}
     .kill-all{background:#a8202c!important;border-color:#a8202c!important;color:#fff!important;font-weight:800!important}
     .kill-all:hover{background:#851823!important;color:#fff!important}
     .module-nav{display:flex;gap:8px;padding:9px 14px;background:#eef3fb;border-bottom:1px solid #d6e1ef;align-items:center}
@@ -2108,7 +2121,19 @@ function initializeDateManager(root, context) {
       <div id="mapping" class="hidden"><div class="mapping"><label>ID товара</label><select id="map-id"></select><label>Name</label><select id="map-name"></select><label>Description (HTML)</label><select id="map-description"></select><label>Regular price</label><select id="map-price"></select><label>lessons</label><select id="map-lessons"></select><label>img (14 цифр)</label><select id="map-img"></select><label>Лист</label><select id="sheet"></select></div><p class="hint">При импорте цена 3.42€ распознаётся как 3.42, а в поле WooCommerce записывается 3,42. Колонка img — имя загруженного изображения из 14 цифр, НЕ WordPress attachment ID. Очередь перемешивается автоматически.</p><button class="primary" id="load">Загрузить в очередь</button></div>
       <div class="notice">Строки проверяются до запуска. Новая загрузка заменяет текущую очередь; скачайте отчёт, если он нужен. Обрабатываются только товары сайта <b>${esc(SITE)}</b>.</div></div>
       <div class="view hidden" id="log"><div class="tools"><button id="downloadLog">↓ Скачать журнал</button><span class="hint">Последние 2000 событий</span></div><div id="logs"></div></div>
-      <div class="view hidden" id="settings"><label class="setting"><div>Параллельных потоков<small>От 1 до 5 рабочих вкладок. Каждая вкладка обрабатывает много курсов по очереди — новые вкладки не создаются для каждого товара.</small></div><input id="workers" type="number" min="1" max="5" step="1" value="1"></label><label class="setting"><div>Пауза между товарами<small>В секундах после проверки результата</small></div><input id="delay" type="number" min="1" max="60" value="3"></label><label class="setting"><input id="stopOnError" type="checkbox" checked><div>Останавливаться при ошибке<small>Рекомендуется: ошибка может оставить несохранённые изменения в редакторе</small></div></label><div class="setting"><div>Перемешивание Excel<small>Однократно при каждом импорте; исходные номера строк сохраняются</small></div><span class="tag done">Всегда</span></div><div class="setting"><div>Downloadable<small>Флажок снимается у каждого товара</small></div><span class="tag done">Всегда</span></div><button id="backup">↓ Резервная копия JSON</button></div>
+      <div class="view hidden" id="settings"><h3>Какие данные обновлять</h3>
+        <p class="hint">По умолчанию обновляются все данные. Снимите «Обновить всё», чтобы выбрать только нужные поля. Неотмеченные поля не заполняются, их визуальные редакторы и медиатека не открываются. Настройки действуют для новых запусков и сохраняются отдельно для каждого сайта.</p>
+        <div class="field-picker">
+          <label class="all-fields"><input type="checkbox" id="fieldAll" checked> Обновить всё</label>
+          <label><input type="checkbox" id="field-name" checked> Название товара</label>
+          <label><input type="checkbox" id="field-slug" checked> URL / slug</label>
+          <label><input type="checkbox" id="field-description" checked> Описание (HTML)</label>
+          <label><input type="checkbox" id="field-price" checked> Regular price</label>
+          <label><input type="checkbox" id="field-lessons" checked> Количество уроков (ACF)</label>
+          <label><input type="checkbox" id="field-img" checked> Обложка товара</label>
+          <label><input type="checkbox" id="field-downloadable" checked> Снять Downloadable</label>
+        </div><p class="hint" id="selectedFieldsSummary">Режим: обновить все поля</p>
+        <label class="setting"><div>Параллельных потоков<small>От 1 до 5 рабочих вкладок. Каждая вкладка обрабатывает много курсов по очереди — новые вкладки не создаются для каждого товара.</small></div><input id="workers" type="number" min="1" max="5" step="1" value="1"></label><label class="setting"><div>Пауза между товарами<small>В секундах после проверки результата</small></div><input id="delay" type="number" min="1" max="60" value="3"></label><label class="setting"><input id="stopOnError" type="checkbox" checked><div>Останавливаться при ошибке<small>Рекомендуется: ошибка может оставить несохранённые изменения в редакторе</small></div></label><div class="setting"><div>Перемешивание Excel<small>Однократно при каждом импорте; исходные номера строк сохраняются</small></div><span class="tag done">Всегда</span></div><div class="setting"><div>Downloadable<small>Флажок снимается у каждого товара</small></div><span class="tag done">Всегда</span></div><button id="backup">↓ Резервная копия JSON</button></div>
       <div class="view help hidden" id="help"><h3>1. Подготовьте Excel</h3><p>Первая строка: <b>ID, Name, Description, Regular price, lessons, img</b>. ID — существующий post ID товара. Description — HTML, как в редакторе WordPress. Regular price может быть с € или запятой. lessons — целое положительное число. img — 14-значное имя уже загруженной фотографии в Media Library (не внутренний attachment ID).</p>
       <h3>2. Импортируйте товары</h3><ol><li>Войдите в <b>${esc(SITE)}</b> как администратор.</li><li>Откройте «Импорт Excel», выберите файл, лист и шесть колонок.</li><li>Нажмите «Загрузить в очередь». Курсы будут перемешаны; номера исходных строк останутся в отчёте.</li><li>Нажмите «Один товар» и проверьте сохранённые поля на сайте; после этого нажмите «Начать» для остальных.</li></ol>
       <h3>3. Как работают потоки</h3><p>На вкладке «Настройки» выберите 1–5 потоков. Ровно столько же рабочих вкладок открывается при старте. Каждая вкладка получает свою непересекающуюся часть очереди. После сохранения и проверки товара следующий открывается через <code>location.replace()</code> В ТОЙ ЖЕ вкладке; дополнительные вкладки для каждого товара не создаются. Например, 400 товаров в 5 потоков — пять вкладок примерно по 80 товаров. При переходе сохраняются служебные параметры номера потока и запуска. Не закрывайте вкладки до завершения или аварийной остановки.</p>
@@ -2132,6 +2157,28 @@ function initializeDateManager(root, context) {
     on('delay','change',e=>{if(!editable())return;state.settings.delay=Math.min(60,Math.max(1,Number(e.target.value)||3));persist();render();});
     on('workers','change',e=>{if(!editable())return;state.settings.workers=Math.max(1,Math.min(5,Math.round(Number(e.target.value)||1)));persist();render();});
     on('stopOnError','change',e=>{if(!editable())return;state.settings.stopOnError=e.target.checked;persist();render();});
+    function setUpdateFields(fields){
+      if(!editable()){render();return;}
+      try{
+        validateFieldSelection(fields);
+        for(const row of state.rows){
+          if(row.invalid||!['pending','opening','filling'].includes(row.status))continue;
+          validateRowForFields(row,fields);
+        }
+        state.settings.fields={...fields};
+        persist();render();
+      }catch(ex){notice((ex.message||String(ex))+' Измените набор полей либо повторно импортируйте Excel.');render();}
+    }
+    on('fieldAll','change',e=>{
+      setUpdateFields(e.target.checked?allFields():
+        Object.fromEntries(FIELD_KEYS.map(k=>[k,false])));
+    });
+    for(const key of FIELD_KEYS)
+      on('field-'+key,'change',e=>{
+        const fields=selectedFields();
+        fields[key]=e.target.checked;
+        setUpdateFields(fields);
+      });
     on('min','click',()=>{panel.classList.add('hidden');$('pill').classList.remove('hidden');});
     const show=()=>{panel.classList.remove('hidden');$('pill').classList.add('hidden');};
     on('pill','click',show);
