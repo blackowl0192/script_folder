@@ -540,7 +540,7 @@
     // The WordPress form always sends post_title; preserve its original value
     // when updating another field such as price or description.
     const actual={name:one('input#title[name="post_title"]').value};
-    if(fields.slug)actual.slug=readSlug();
+    if(fields.slug||fields.name)actual.slug=readSlug();
     if(fields.description)actual.description=await readDescription(allowStopped);
     if(fields.price)actual.price=one('#_regular_price').value;
     if(fields.lessons)actual.lessons=lessonsField().value;
@@ -835,6 +835,7 @@
           }
           const fields=validateFieldSelection(selectedFields(state.settings));
           validateRowForFields(r,fields);
+          r.appliedFields=selectedFieldKeys(state.settings);
           await editorReady(fields,false);
           stage(r,'filling','Считываем товар. Обновляем только: '+
             selectedFieldKeys(state.settings).map(k=>FIELD_LABELS[k]).join(', '));
@@ -861,7 +862,9 @@
           if(ed?.initialized&&!ed.isHidden())ed.save();
           r.expected={};
           if(fields.name)r.expected.name=r.name;
+          // A title-only edit must not accidentally change the existing permalink.
           if(fields.slug)r.expected.slug=r.slug;
+          else if(fields.name && r.before.slug)r.expected.slug=r.before.slug;
           if(fields.description)r.expected.description=normalized;
           if(fields.price)r.expected.price=r.price;
           if(fields.lessons)r.expected.lessons=r.lessons;
@@ -1140,8 +1143,10 @@
   function csv(rows){return '\uFEFF'+rows.map(row=>row.map(cell=>{let s=String(cell??'');if(/^\s*[=+@-]/.test(s))s="'"+s;return '"'+s.replace(/"/g,'""')+'"';}).join(';')).join('\r\n');}
   function exportReport(){
     if(!IS_COURSE_WORKER)state=mergedCourseState();
-    const header=['Excel Row','Product ID','Name','Edit URL','Description','Regular price','lessons','img','Status','Message','Checked At','Original name','Original slug','Original price','Original lessons','Original image','Saved image','Saved WordPress attachment ID','Excel price (source)'];
-    const rows=state.rows.map(r=>[r.excelRow,r.id,r.name,r.url,r.description,r.price,r.lessons,r.img,STATUSES[r.status],r.message,r.checked,r.before?.name,r.before?.slug,r.before?.price,r.before?.lessons,r.before?.image,r.actual?.image,r.actual?.attachmentId,r.rawPrice]);
+    const header=['Excel Row','Product ID','Name','Edit URL','Description','Regular price','lessons','img','Updated fields','Status','Message','Checked At','Original name','Original slug','Original price','Original lessons','Original image','Saved image','Saved WordPress attachment ID','Excel price (source)'];
+    const rows=state.rows.map(r=>[r.excelRow,r.id,r.name,r.url,r.description,r.price,r.lessons,r.img,
+      (r.appliedFields||selectedFieldKeys(state.settings)).map(k=>FIELD_LABELS[k]||k).join(', '),
+      STATUSES[r.status],r.message,r.checked,r.before?.name,r.before?.slug,r.before?.price,r.before?.lessons,r.before?.image,r.actual?.image,r.actual?.attachmentId,r.rawPrice]);
     download(csv([header,...rows]),`${SITE}-woo-products-report.csv`,'text/csv;charset=utf-8');
   }
   function exportLog(){if(!IS_COURSE_WORKER)state=mergedCourseState();download(csv([['Time','Level','Excel Row','Product ID','Stage','Message'],...state.logs.map(x=>[x.time,x.level,x.row,x.id,x.stage,x.message])]),`${SITE}-woo-products-log.csv`,'text/csv;charset=utf-8');}
@@ -1204,7 +1209,7 @@
     $('pages').textContent=`${page+1} / ${pages}`;$('prev').disabled=page===0;$('next').disabled=page>=pages-1;
     if(!list.length){$('rows').innerHTML='<div class="empty"><b>Нет товаров</b>Импортируйте Excel или измените фильтр.</div>';return;}
     $('rows').innerHTML=`<table><thead><tr><th style="width:48px">Excel</th><th>Товар</th><th style="width:68px">Цена</th><th style="width:96px">Статус</th><th style="width:42px"></th></tr></thead><tbody>`+
-      list.slice(page*25,page*25+25).map(r=>`<tr class="${state.rows[state.index]===r?'current-row':''}"><td>${r.excelRow}</td><td><strong title="${esc(r.name)}">${esc(r.name)}</strong><small>ID ${esc(r.id)} · img ${esc(r.img)} · ${esc(r.message||'')}</small></td><td>${esc(r.price??'—')}</td><td><span class="tag ${esc(r.status)}">${STATUSES[r.status]}</span></td><td><button data-detail="${esc(r.key)}">⋯</button></td></tr>`).join('')+'</tbody></table>';
+      list.slice(page*25,page*25+25).map(r=>`<tr class="${state.rows[state.index]===r?'current-row':''}"><td>${r.excelRow}</td><td><strong title="${esc(r.name||'Товар ID '+r.id)}">${esc(r.name||'Товар ID '+r.id)}</strong><small>ID ${esc(r.id)} · img ${esc(r.img||'—')} · ${esc(r.message||'')}</small></td><td>${esc(r.price??'—')}</td><td><span class="tag ${esc(r.status)}">${STATUSES[r.status]}</span></td><td><button data-detail="${esc(r.key)}">⋯</button></td></tr>`).join('')+'</tbody></table>';
     $('rows').querySelectorAll('[data-detail]').forEach(el=>el.onclick=()=>detail(state.rows.find(r=>r.key===el.dataset.detail)));
   }
   function renderLog(){if(root)$('logs').innerHTML=state.logs.slice().reverse().map(x=>`<div class="log ${esc(x.level)}"><time>${new Date(x.time).toLocaleTimeString()}</time><span>${x.row?'№ '+x.row:'Система'}</span><span>${esc(x.message)}</span></div>`).join('')||'<div class="empty">Журнал пуст</div>';}
@@ -2213,7 +2218,7 @@ function initializeDateManager(root, context) {
       <nav class="tabs"><button data-tab="queue">Очередь</button><button data-tab="processed">Обработанные</button><button data-tab="import" class="active">Импорт Excel</button><button data-tab="log">Журнал</button><button data-tab="settings">Настройки</button><button data-tab="help">Как работать</button></nav>
       <div class="view hidden" id="queue"><div class="tools"><input type="search" id="search" placeholder="Название, ID или img…"><select id="filter"><option value="all">Все статусы</option><option value="pending">В очереди</option><option value="error">Ошибка</option><option value="skipped">Пропущено</option></select></div><div id="rows"></div></div>
       <div class="view" id="import"><div class="tools"><button class="danger" id="reset">Очистить очередь и историю</button></div><div class="drop" id="drop"><label for="file">Выбрать Excel-файл</label><input id="file" type="file" accept=".xlsx,.xls,.csv" hidden><small>Или перетащите сюда · .xlsx / .xls / .csv</small><small id="filename">Данные Excel обрабатываются локально</small></div>
-      <div id="mapping" class="hidden"><div class="mapping"><label>ID товара</label><select id="map-id"></select><label>Name</label><select id="map-name"></select><label>Description (HTML)</label><select id="map-description"></select><label>Regular price</label><select id="map-price"></select><label>lessons</label><select id="map-lessons"></select><label>img (14 цифр)</label><select id="map-img"></select><label>Лист</label><select id="sheet"></select></div><p class="hint">При импорте цена 3.42€ распознаётся как 3.42, а в поле WooCommerce записывается 3,42. Колонка img — имя загруженного изображения из 14 цифр, НЕ WordPress attachment ID. Очередь перемешивается автоматически.</p><button class="primary" id="load">Загрузить в очередь</button></div>
+      <div id="mapping" class="hidden"><div class="mapping"><label>ID товара</label><select id="map-id"></select><label>Name</label><select id="map-name"></select><label>Description (HTML)</label><select id="map-description"></select><label>Regular price</label><select id="map-price"></select><label>lessons</label><select id="map-lessons"></select><label>img (14 цифр)</label><select id="map-img"></select><label>Лист</label><select id="sheet"></select></div><p class="hint">Обязательны только ID и колонки для выбранных полей. Например, для «Только цена» достаточно ID и Regular price. Если выбран slug, нужна колонка Name. Настройка находится во вкладке «Настройки → Какие данные обновлять». Неиспользуемые столбцы можно оставить без сопоставления. Цена 3.42 вводится как 3,42; img — 14-значное имя файла, а не attachment ID.</p><button class="primary" id="load">Загрузить в очередь</button></div>
       <div class="notice">Строки проверяются до запуска. Новая загрузка заменяет текущую очередь; скачайте отчёт, если он нужен. Обрабатываются только товары сайта <b>${esc(SITE)}</b>.</div></div>
       <div class="view hidden" id="log"><div class="tools"><button id="downloadLog">↓ Скачать журнал</button><span class="hint">Последние 2000 событий</span></div><div id="logs"></div></div>
       <div class="view hidden" id="settings"><h3>Какие данные обновлять</h3>
