@@ -1421,6 +1421,7 @@
   }
 
   const css=`
+    .field-presets{display:flex;flex-wrap:wrap;margin:6px 0}
     .field-picker{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px;padding:9px 0}
     .field-picker label{display:flex;gap:7px;align-items:center;background:#f7f9fd;padding:9px;border:1px solid #e0e7f0;border-radius:8px}
     .field-picker input[type=checkbox]{flex:none}
@@ -2222,6 +2223,12 @@ function initializeDateManager(root, context) {
       <div class="notice">Строки проверяются до запуска. Новая загрузка заменяет текущую очередь; скачайте отчёт, если он нужен. Обрабатываются только товары сайта <b>${esc(SITE)}</b>.</div></div>
       <div class="view hidden" id="log"><div class="tools"><button id="downloadLog">↓ Скачать журнал</button><span class="hint">Последние 2000 событий</span></div><div id="logs"></div></div>
       <div class="view hidden" id="settings"><h3>Какие данные обновлять</h3>
+        <div class="tools field-presets">
+          <button type="button" data-field-preset="all">Все поля</button>
+          <button type="button" data-field-preset="name">Только название</button>
+          <button type="button" data-field-preset="price">Только цену</button>
+          <button type="button" data-field-preset="description">Только описание</button>
+        </div>
         <p class="hint">По умолчанию обновляются все данные. Снимите «Обновить всё», чтобы выбрать только нужные поля. Неотмеченные поля не заполняются, их визуальные редакторы и медиатека не открываются. Настройки действуют для новых запусков и сохраняются отдельно для каждого сайта.</p>
         <div class="field-picker">
           <label class="all-fields"><input type="checkbox" id="fieldAll" checked> Обновить всё</label>
@@ -2235,11 +2242,11 @@ function initializeDateManager(root, context) {
         </div><p class="hint" id="selectedFieldsSummary">Режим: обновить все поля</p>
         <label class="setting"><div>Параллельных потоков<small>От 1 до 5 рабочих вкладок. Каждая вкладка обрабатывает много курсов по очереди — новые вкладки не создаются для каждого товара.</small></div><input id="workers" type="number" min="1" max="5" step="1" value="1"></label><label class="setting"><div>Пауза между товарами<small>В секундах после проверки результата</small></div><input id="delay" type="number" min="1" max="60" value="3"></label><label class="setting"><input id="stopOnError" type="checkbox" checked><div>Останавливаться при ошибке<small>Рекомендуется: ошибка может оставить несохранённые изменения в редакторе</small></div></label><div class="setting"><div>Перемешивание Excel<small>Однократно при каждом импорте; исходные номера строк сохраняются</small></div><span class="tag done">Всегда</span></div><div class="setting"><div>Downloadable<small>Флажок снимается у каждого товара</small></div><span class="tag done">Всегда</span></div><button id="backup">↓ Резервная копия JSON</button></div>
       <div class="view help hidden" id="help"><h3>1. Подготовьте Excel</h3><p>Первая строка: <b>ID, Name, Description, Regular price, lessons, img</b>. ID — существующий post ID товара. Description — HTML, как в редакторе WordPress. Regular price может быть с € или запятой. lessons — целое положительное число. img — 14-значное имя уже загруженной фотографии в Media Library (не внутренний attachment ID).</p>
-      <h3>2. Импортируйте товары</h3><ol><li>Войдите в <b>${esc(SITE)}</b> как администратор.</li><li>Откройте «Импорт Excel», выберите файл, лист и шесть колонок.</li><li>Нажмите «Загрузить в очередь». Курсы будут перемешаны; номера исходных строк останутся в отчёте.</li><li>Нажмите «Один товар» и проверьте сохранённые поля на сайте; после этого нажмите «Начать» для остальных.</li></ol>
+      <h3>2. Выберите поля и импортируйте</h3><ol><li>В «Настройки → Какие данные обновлять» выберите «Все поля», «Только название», «Только цену», «Только описание» либо отметьте произвольные поля. Название и slug выбираются отдельно: изменение только Name не переписывает URL. По умолчанию — все поля.</li><li>Войдите в <b>${esc(SITE)}</b> как администратор.</li><li>Откройте «Импорт Excel», выберите файл, лист и шесть колонок.</li><li>Для выбранных полей нужны только соответствующие столбцы Excel плюс ID. Например, для «Только цену» достаточно двух столбцов ID и Regular price. Сопоставьте нужные колонки и нажмите «Загрузить в очередь». Номера исходных строк сохраняются в отчёте.</li><li>Нажмите «Один товар» и проверьте сохранённые поля на сайте; после этого нажмите «Начать» для остальных.</li></ol>
       <h3>3. Как работают потоки</h3><p>На вкладке «Настройки» выберите 1–5 потоков. Ровно столько же рабочих вкладок открывается при старте. Каждая вкладка получает свою непересекающуюся часть очереди. После сохранения и проверки товара следующий открывается через <code>location.replace()</code> В ТОЙ ЖЕ вкладке; дополнительные вкладки для каждого товара не создаются. Например, 400 товаров в 5 потоков — пять вкладок примерно по 80 товаров. При переходе сохраняются служебные параметры номера потока и запуска. Не закрывайте вкладки до завершения или аварийной остановки.</p>
       <h3>4. Что делает скрипт</h3><p>Открывает <code>/wp-admin/post.php?post=ID&amp;action=edit</code>. Заполняет Name и slug, переключает Description в Text, вставляет HTML и возвращается в Visual. Меняет Regular price и ACF lessons, снимает Downloadable, меняет обложку через Media Library. После проверки отправляет один POST WordPress, затем отдельным GET сверяет сохранённые поля, не перезагружая редактор для проверки. Только при совпадении всех данных переходит к следующему товару в той же вкладке.</p>
       <h3>5. Пауза, ошибки и безопасность</h3><p><b>«АВАРИЙНЫЙ СТОП ВСЕХ»</b> доступен даже при зависании потоков. Он записывает общий запрет на новые действия в Tampermonkey, останавливает все рабочие вкладки и сохраняет очередь. Отправленный HTTP POST невозможно отменить — после остановки проверьте такие товары через GET. Кнопка также доступна слева внизу каждой рабочей вкладки и в меню Tampermonkey. Повторный запуск — только вручную, после прекращения активности вкладок.</p><p>Не редактируйте страницу вручную во время работы. Пауза останавливает новые действия, но не отменяет отправленный Update. После сохранения статус «Выполнено» ставится только после сверки на новой странице. Если данные не совпали — «Проверить», повторный Update автоматически не выполняется. Для такого товара доступна проверка без Update через «⋯».</p><p>Если произошла ошибка, исправьте причину, затем «Повторить ошибки». Неверные строки Excel исправляются только повторным импортом. Скачивайте отчёт и журнал. Очереди и настройки независимы для каждого сайта: <b>smmmaster.net, hottestcourse.com, learnmarket.net, profcourse.com, bestsocials.online</b>.</p>
-      <h3>Ограничения</h3><p>Скрипт рассчитан на Classic WordPress / WooCommerce и указанные элементы ACF. В отдельных темах или версиях админки разметка может отличаться. При отсутствии нужных полей скрипт останавливается до Update.</p></div>
+      <h3>Ограничения</h3><p>При выборочном обновлении WordPress всё равно отправляет стандартную форму товара, но скрипт изменяет только выбранные поля. Поля, которые не выбраны, не заполняются и не проверяются на новое значение; при редактировании только Name дополнительно сверяется прежний slug. Сохранение конкретного сайта выполняется в 1–5 рабочих вкладках по выбранным полям.</p><p>Скрипт рассчитан на Classic WordPress / WooCommerce и указанные элементы ACF. В отдельных темах или версиях админки разметка может отличаться. При отсутствии нужных полей скрипт останавливается до Update.</p></div>
       <footer class="foot"><span id="updated">Очередь хранится локально</span><button id="prev">←</button><span id="pages" style="flex:none">1 / 1</span><button id="next">→</button></footer></div><div class="body hidden" id="date-content"></div></section>`;
     panel=$('panel');
     const on=(id,ev,fn)=>$(id).addEventListener(ev,fn);
@@ -2272,6 +2279,12 @@ function initializeDateManager(root, context) {
         persist();render();
       }catch(ex){notice((ex.message||String(ex))+' Измените набор полей либо повторно импортируйте Excel.');render();}
     }
+    root.querySelectorAll('[data-field-preset]').forEach(button=>button.addEventListener('click',()=>{
+      const name=button.dataset.fieldPreset;
+      const fields=name==='all'?allFields():
+        Object.fromEntries(FIELD_KEYS.map(k=>[k,k===name]));
+      setUpdateFields(fields);
+    }));
     on('fieldAll','change',e=>{
       setUpdateFields(e.target.checked?allFields():
         Object.fromEntries(FIELD_KEYS.map(k=>[k,false])));
