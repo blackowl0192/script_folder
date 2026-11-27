@@ -1012,36 +1012,74 @@
       const found=header.findIndex(h=>aliases.includes(cleanHeader(h)));el.value=found<0?'':String(found);
     }
   }
+  function validateRowForFields(row,fields){
+    validateFieldSelection(fields);
+    if(!/^[1-9]\\d*$/.test(String(row.id||'')))throw error('ID должен быть числовым WordPress post ID.');
+    if(fields.name && !String(row.name||'').trim())throw error('Для изменения названия нужна колонка Name.');
+    if(fields.slug && (!String(row.slug||'').trim()||String(row.slug).length>180))
+      throw error('Для изменения slug нужна колонка Name с корректным названием.');
+    if(fields.description && !String(row.description||'').trim())
+      throw error('Для изменения описания нужна непустая колонка Description.');
+    if(fields.price)normalizePrice(row.price);
+    if(fields.lessons)normalizeLessons(row.lessons);
+    if(fields.img)normalizeImg(row.img);
+    return true;
+  }
   function loadQueue(){
     if(!workbook||!editable())return;
     try{
-      const names=Object.keys(ALIAS),maps=names.map(name=>$(`map-${name}`).value);
-      if(maps.some(v=>v==='')||new Set(maps).size!==names.length)throw error('Сопоставьте шесть разных колонок: ID, Name, Description, Regular price, lessons, img.');
-      const [idIndex,nameIndex,descriptionIndex,priceIndex,lessonsIndex,imgIndex]=maps.map(Number);
-      const rows=[],seen=new Set(),data=sheetRows();
+      const fields=validateFieldSelection(selectedFields());
+      const columnFor=k=>$('map-'+k).value===''?null:Number($('map-'+k).value);
+      const columns=Object.fromEntries(Object.keys(ALIAS).map(k=>[k,columnFor(k)]));
+      const requiredKeys=new Set(['id']);
+      if(fields.name||fields.slug)requiredKeys.add('name');
+      if(fields.description)requiredKeys.add('description');
+      if(fields.price)requiredKeys.add('price');
+      if(fields.lessons)requiredKeys.add('lessons');
+      if(fields.img)requiredKeys.add('img');
+      const requiredIndices=[...requiredKeys].map(k=>columns[k]);
+      if(requiredIndices.some(x=>x===null)||new Set(requiredIndices).size!==requiredIndices.length)
+        throw error('Для выбранного режима сопоставьте отдельные колонки: '+
+          [...requiredKeys].map(k=>k==='price'?'Regular price':k).join(', ')+'.');
+      const data=sheetRows(),rows=[],seen=new Set();
+      const from=(line,key)=>columns[key]===null?'':String(line[columns[key]]??'');
       for(let i=1;i<data.length;i++){
-        const line=data[i];if(line.every(cell=>!String(cell).trim()))continue;
-        const r={key:uid(),excelRow:i+1,id:String(line[idIndex]??'').trim(),name:String(line[nameIndex]??'').trim(),description:String(line[descriptionIndex]??''),rawPrice:String(line[priceIndex]??''),rawLessons:String(line[lessonsIndex]??''),rawImg:String(line[imgIndex]??'').trim(),status:'pending',message:''};
+        const line=data[i];
+        if(line.every(cell=>!String(cell).trim()))continue;
+        const r={key:uid(),excelRow:i+1,id:from(line,'id').trim(),
+          name:from(line,'name').trim(),description:from(line,'description'),
+          rawPrice:from(line,'price'),rawLessons:from(line,'lessons'),
+          rawImg:from(line,'img').trim(),status:'pending',message:''};
+        r.url=/^[1-9]\\d*$/.test(r.id)?productURL(r.id):'';
         try{
-          if(!/^[1-9]\d*$/.test(r.id))throw error('ID должен быть числовым WordPress post ID.');
+          if(!/^[1-9]\\d*$/.test(r.id))throw error('ID должен быть числовым WordPress post ID.');
           if(seen.has(r.id))throw error('Повторный ID товара в Excel.');
           seen.add(r.id);
-          if(!r.name)throw error('Name не заполнено.');
-          r.slug=slugFromTitle(r.name);if(!r.slug||r.slug.length>180)throw error('Не удалось получить корректный slug (до 180 символов) из Name.');
-          r.description=validateHTML(r.description);
-          r.price=normalizePrice(r.rawPrice);
-          r.lessons=normalizeLessons(r.rawLessons);
-          r.img=normalizeImg(r.rawImg);
-          r.url=productURL(r.id);
+          if(fields.name||fields.slug){if(!r.name)throw error('Name не заполнено.');}
+          if(fields.slug){
+            r.slug=slugFromTitle(r.name);
+            if(!r.slug||r.slug.length>180)throw error('Не удалось получить корректный slug из Name.');
+          }
+          if(fields.description)r.description=validateHTML(r.description);
+          if(fields.price)r.price=normalizePrice(r.rawPrice);
+          if(fields.lessons)r.lessons=normalizeLessons(r.rawLessons);
+          if(fields.img)r.img=normalizeImg(r.rawImg);
+          validateRowForFields(r,fields);
         }catch(ex){r.status='error';r.invalid=true;r.message=ex.message||String(ex);}
         rows.push(r);
       }
       if(!rows.length)throw error('В Excel нет данных.');
       if(state.rows.length&&!confirm('Заменить текущую очередь? Для сохранения истории сначала скачайте отчёт.'))return;
-      const previous=state.settings;state=empty();state.settings=previous;state.filename=importFile;state.rows=shuffle(rows);
-      page=0;persist();switchTab('queue');log('info',`Импортировано ${rows.length} товаров. Очередь перемешана. Ошибочных строк: ${rows.filter(r=>r.invalid).length}. Номера строк Excel сохранены.`);
+      const previous=state.settings;state=empty();state.settings={...previous,fields:{...fields}};
+      state.filename=importFile;state.rows=shuffle(rows);
+      page=0;persist();switchTab('queue');
+      log('info','Импортировано '+rows.length+' товаров. Выбраны поля: '+
+        selectedFieldKeys().map(k=>FIELD_LABELS[k]).join(', ')+
+        '. Ошибочных строк: '+rows.filter(r=>r.invalid).length+
+        '. Очередь перемешана, номера строк Excel сохранены.');
     }catch(ex){notice(ex.message||String(ex));}
   }
+
   function download(payload,name,mime){
     const url=URL.createObjectURL(new Blob([payload],{type:mime}));const a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),20000);
   }
